@@ -5,10 +5,11 @@
    activas la sincronización, también en tu cuenta de Firebase.
    ========================================================= */
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.3.0';
 const STORAGE_KEY = 'misfinanzas:data:v1';
 const PENDING_KEY = 'misfinanzas:pendientes';
 const SYNCUID_KEY = 'misfinanzas:sync-uid';
+let persistWarned = false;
 const $ = (s, r = document) => r.querySelector(s);
 const LOCALE = (navigator.language || '').toLowerCase().startsWith('es') ? navigator.language : 'es-419';
 
@@ -32,16 +33,16 @@ const REC_DEFAULT_CAT = { factura: 'Servicios', suscripcion: 'Suscripciones', pe
 const FREQ = { mensual: 'Mensual', quincenal: 'Quincenal', anual: 'Anual' };
 const CLIENT_FREQ = { mensual: 'Mensual', quincenal: 'Quincenal', semanal: 'Semanal', proyecto: 'Por proyecto' };
 const GROUP_LABEL = { needs: 'Necesidad', wants: 'Deseo' };
-const TITLES = { inicio: 'Inicio', movimientos: 'Movimientos', pagos: 'Pagos fijos', deudas: 'Deudas y tarjetas', clientes: 'Clientes', cliente: 'Cliente', mas: 'Más', metas: 'Metas', presupuesto: 'Presupuesto', ajustes: 'Ajustes' };
-const TAB_OF = { metas: 'mas', presupuesto: 'mas', ajustes: 'mas', cliente: 'clientes' };
-const BACK_TO = { metas: 'mas', ajustes: 'mas', cliente: 'clientes' };
+const TITLES = { inicio: 'Inicio', movimientos: 'Movimientos', pagos: 'Pagos fijos', deudas: 'Deudas y tarjetas', clientes: 'Clientes', cliente: 'Cliente', mas: 'Más', metas: 'Metas', presupuesto: 'Presupuesto', ajustes: 'Ajustes', calendario: 'Recordatorios' };
+const TAB_OF = { metas: 'mas', presupuesto: 'mas', ajustes: 'mas', calendario: 'mas', cliente: 'clientes' };
+const BACK_TO = { metas: 'mas', ajustes: 'mas', calendario: 'mas', cliente: 'clientes' };
 const MONTH_VIEWS = ['inicio', 'movimientos', 'pagos', 'presupuesto'];
 const CAT_EMOJI = {
   'Salario': '💼', 'Clientes': '🤝', 'Negocio': '🏪', 'Freelance': '💻', 'Inversiones': '📈', 'Regalos': '🎁', 'Otros ingresos': '💵',
   'Vivienda': '🏠', 'Comida': '🍽️', 'Transporte': '🚌', 'Servicios': '💡', 'Salud': '🩺', 'Educación': '📚',
   'Entretenimiento': '🎬', 'Ropa': '👕', 'Suscripciones': '📺', 'Pensión alimenticia': '🧒', 'Deudas': '🏦', 'Otros gastos': '🧾'
 };
-const CHART_COLORS = ['#0d9488', '#2563eb', '#d97706', '#db2777', '#7c3aed', '#16a34a', '#dc2626', '#64748b'];
+const CHART_COLORS = ['#3a5fb0', '#0e7490', '#d97706', '#db2777', '#7c3aed', '#16a34a', '#dc2626', '#64748b'];
 const FIXED_CATS = { gasto: ['Deudas'], ingreso: ['Clientes'] };
 const COLLS = ['transactions', 'debts', 'goals', 'recurring', 'clients', 'invoices'];
 const ICON_EDIT = '<svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
@@ -58,7 +59,10 @@ function guessCurrency() {
 function defaultState() {
   return {
     version: 2,
-    settings: { currency: guessCurrency(), theme: 'auto', expectedIncome: 0, lastBackup: null, lastMethod: 'cash' },
+    settings: {
+      currency: guessCurrency(), theme: 'auto', expectedIncome: 0, lastBackup: null, lastMethod: 'cash',
+      calDays: 2, calInclude: { fixed: true, cards: true, loans: true, clients: true }, calHash: null, calExportedAt: null
+    },
     categories: {
       ingreso: ['Salario', 'Clientes', 'Negocio', 'Freelance', 'Inversiones', 'Regalos', 'Otros ingresos'],
       gasto: ['Vivienda', 'Comida', 'Transporte', 'Servicios', 'Salud', 'Educación', 'Pensión alimenticia', 'Entretenimiento', 'Ropa', 'Suscripciones', 'Deudas', 'Otros gastos']
@@ -72,6 +76,15 @@ function defaultState() {
     transactions: [], debts: [], goals: [], recurring: [], clients: [], invoices: [],
     updatedAt: Date.now()
   };
+}
+
+/* Los ids se escriben dentro de la página: solo se aceptan letras, números y _ - . : */
+const SAFE_ID = /^[A-Za-z0-9_.:-]{1,120}$/;
+const NUM_FIELDS = ['amount', 'startBalance', 'rate', 'minPayment', 'creditLimit', 'target', 'initial', 'currentValue', 'paidAmount', 'updatedAt', 'createdAt'];
+function safeRecord(x) {
+  if (!x || typeof x !== 'object' || !SAFE_ID.test(String(x.id))) return false;
+  for (const k of NUM_FIELDS) if (k in x && x[k] !== null && typeof x[k] !== 'number') x[k] = Number(x[k]) || 0;
+  return true;
 }
 
 function normalize(obj) {
@@ -89,7 +102,8 @@ function normalize(obj) {
     limits: o.limits && typeof o.limits === 'object' ? o.limits : {},
     split: { ...d.split, ...(o.split || {}) }
   };
-  for (const c of COLLS) s[c] = Array.isArray(o[c]) ? o[c] : [];
+  // Solo registros con un id seguro y montos numéricos (protege contra respaldos alterados)
+  for (const c of COLLS) s[c] = (Array.isArray(o[c]) ? o[c] : []).filter(safeRecord);
   // Migración desde la versión 1
   if ((o.version || 1) < 2) {
     if (!s.categories.gasto.includes('Pensión alimenticia')) s.categories.gasto.splice(Math.max(0, s.categories.gasto.indexOf('Entretenimiento')), 0, 'Pensión alimenticia');
@@ -118,7 +132,7 @@ function persist() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
-    toast('No se pudo guardar en este dispositivo', 'error');
+    if (!persistWarned) { persistWarned = true; ask('El almacenamiento del celular está lleno o bloqueado. Haz un respaldo para no perder tus últimos cambios.', { title: 'No se pudo guardar', ok: 'Entendido', cancel: null }); }
   }
   savePending();
 }
@@ -195,7 +209,7 @@ window.App = {
   applyRemote(docs) {
     let changed = false;
     for (const d of docs) {
-      if (!d || !d.coll || !d.id) continue;
+      if (!d || !d.coll || !d.id || !SAFE_ID.test(String(d.id))) continue;
       const key = d.coll + ':' + d.id;
       const remoteTs = Number(d.updatedAt) || 0;
       if (key in pending) {
@@ -222,7 +236,8 @@ window.App = {
       if (d.deleted) {
         if (local && (local.updatedAt || 0) <= remoteTs) { arr.splice(idx, 1); delete tracked[key]; changed = true; }
       } else if (d.data && (!local || (local.updatedAt || 0) < remoteTs)) {
-        const rec = { ...d.data, updatedAt: remoteTs };
+        const rec = { ...d.data, id: d.id, updatedAt: remoteTs };
+        safeRecord(rec);
         if (local) { for (const k of Object.keys(local)) delete local[k]; Object.assign(local, rec); }
         else arr.push(rec);
         tracked[key] = recJson(rec);
@@ -496,6 +511,62 @@ function upcomingOccurrences(daysAhead = 10) {
   return list.sort((a, b) => a.due.localeCompare(b.due));
 }
 
+/* --- Cuánto puedes gastar hoy (mes actual) --- */
+function spendingToday() {
+  const t = todayISO(), m = monthOf(t);
+  const tot = monthTotals(m);
+  // Pagos fijos de este mes que faltan y los del mes pasado que siguen vencidos
+  let fixed = 0;
+  for (const r of state.recurring) {
+    for (const o of occurrences(r, m)) {
+      const s = occStatus(o);
+      if (s.code !== 'pagada' && s.code !== 'omitida') fixed += Number(r.amount) || 0;
+    }
+    for (const o of occurrences(r, shiftMonth(m, -1))) if (occStatus(o).code === 'vencida') fixed += Number(r.amount) || 0;
+  }
+  // Cuotas de préstamos de este mes que no has registrado
+  for (const d of state.debts) {
+    if (d.kind === 'tarjeta') continue;
+    const i = debtInfo(d);
+    if (i.owed > 0 && d.minPayment && !i.paidThisMonth) fixed += Math.min(d.minPayment, i.owed);
+  }
+  fixed = round2(fixed);
+  // Lo libre: ingresos − gastos (las compras con tarjeta cuentan como gasto) − ahorro − pagos fijos pendientes
+  const free = round2(tot.income - tot.expense - tot.saved - fixed);
+  // Gastos del día que no son pagos fijos ni cuotas
+  const spentToday = round2(sum(state.transactions.filter((x) => x.type === 'gasto' && x.date === t && !x.recurringId && !x.debtId), (x) => x.amount));
+  const daysLeft = daysInMonth(m) - Number(t.slice(8)) + 1;
+  const perDay = round2(Math.max(0, free + spentToday) / daysLeft);
+  return { ...tot, fixed, free, spentToday, daysLeft, perDay, left: round2(perDay - spentToday) };
+}
+
+/* --- Atajos: tus gastos más frecuentes para registrarlos en 2 toques --- */
+function quickExpenses(max = 6) {
+  const since = addDays(todayISO(), -120);
+  const groups = new Map();
+  for (const t of state.transactions) {
+    if (t.type !== 'gasto' || t.recurringId || t.debtId || t.invoiceId || t.date < since) continue;
+    const method = methodValue(t);
+    const note = (t.note || '').trim();
+    const key = [t.category, method, note.toLowerCase()].join('|');
+    const g = groups.get(key) || { category: t.category, method, note, count: 0, last: '', lastAmount: 0 };
+    g.count++;
+    if (t.date >= g.last) { g.last = t.date; g.lastAmount = t.amount; }
+    groups.set(key, g);
+  }
+  const list = [...groups.values()].sort((a, b) => b.count - a.count || b.last.localeCompare(a.last)).slice(0, max);
+  // Si todavía registraste pocos gastos, completa con tus categorías
+  if (list.length < 4) {
+    const used = new Set(list.map((g) => g.category));
+    for (const c of state.categories.gasto) {
+      if (list.length >= 4) break;
+      if (used.has(c) || FIXED_CATS.gasto.includes(c)) continue;
+      list.push({ category: c, method: defaultMethod(), note: '', count: 0, lastAmount: 0 });
+    }
+  }
+  return list;
+}
+
 /* --- Clientes --- */
 function invoiceStatus(inv) {
   if (inv.paidDate) return { code: 'pagada' };
@@ -587,10 +658,30 @@ function render() {
   $('#pageTitle').textContent = ui.tab === 'cliente' ? (findClient(ui.clientId)?.name || 'Cliente') : TITLES[ui.tab];
   $('#monthLabel').textContent = cap(monthName(ui.month));
   const fabLabel = { deudas: 'Agregar deuda o tarjeta', metas: 'Nueva meta', pagos: 'Agregar pago fijo', clientes: 'Agregar cliente', cliente: 'Nueva factura' }[ui.tab] || 'Agregar movimiento';
-  $('#fab').hidden = ui.tab === 'ajustes' || ui.tab === 'mas';
+  $('#fab').hidden = ui.tab === 'ajustes' || ui.tab === 'mas' || ui.tab === 'calendario';
   $('#fab').setAttribute('aria-label', fabLabel);
   view.innerHTML = VIEWS[ui.tab]();
   refreshSyncUi();
+  updateTabBadges();
+}
+
+/** Circulito rojo en las pestañas: solo cuando hay algo vencido que requiere acción. */
+function updateTabBadges() {
+  const today = new Date().getDate();
+  const counts = {
+    pagos: upcomingOccurrences(0).filter((o) => o.s.code === 'vencida').length,
+    deudas: cards().filter((d) => { const i = debtInfo(d); return i.toPay > 0 && i.daysToDue !== null && i.daysToDue < 0; }).length +
+      state.debts.filter((d) => { if (d.kind === 'tarjeta' || !d.dueDay) return false; const i = debtInfo(d); return i.owed > 0 && !i.paidThisMonth && d.dueDay < today; }).length,
+    clientes: receivables().overdueCount
+  };
+  for (const b of document.querySelectorAll('.tabbar button')) {
+    const n = counts[b.dataset.tab] || 0;
+    let el = b.querySelector('.tab-badge');
+    if (!n) { if (el) el.remove(); continue; }
+    if (!el) { el = document.createElement('span'); el.className = 'tab-badge'; b.appendChild(el); }
+    el.textContent = n > 9 ? '9+' : String(n);
+    el.setAttribute('aria-label', `${n} vencido${n === 1 ? '' : 's'}`);
+  }
 }
 
 let renderQueued = false;
@@ -612,7 +703,7 @@ function countStat(label, value, tone, extra = '') {
 }
 function bar(pct, tone = '') { return `<div class="bar ${tone}"><i style="width:${(clamp(pct, 0, 1) * 100).toFixed(1)}%"></i></div>`; }
 function emptyState(icon, text, btnHtml = '') { return `<div class="empty"><span class="big">${icon}</span><p>${text}</p>${btnHtml}</div>`; }
-function editBtn(action, id, name) { return `<button class="icon-btn" data-action="${action}" data-id="${id}" aria-label="Editar ${esc(name)}">${ICON_EDIT}</button>`; }
+function editBtn(action, id, name) { return `<button class="icon-btn" data-action="${action}" data-id="${id}" aria-label="Editar ${esc(name)}" title="Editar">${ICON_EDIT}</button>`; }
 function alertBox(tone, ico, text, action = '') {
   return action
     ? `<button class="alert ${tone}" ${action}><span class="ico">${ico}</span><span>${text}</span></button>`
@@ -659,10 +750,11 @@ function txRow(t, withDate = false) {
 
 function occBadge(s) {
   switch (s.code) {
-    case 'pagada': return '<span class="badge good">Pagada ✓</span>';
+    // Color solo cuando requiere acción pronto; lo pagado u omitido va en gris
+    case 'pagada': return '<span class="badge">Pagada ✓</span>';
     case 'omitida': return '<span class="badge">Omitida</span>';
     case 'vencida': return `<span class="badge bad">Vencida ${s.days === 1 ? 'ayer' : `hace ${s.days} días`}</span>`;
-    case 'porpagar': return `<span class="badge ${s.days <= 3 ? 'warn' : 'primary'}">${s.days === 0 ? 'Vence hoy' : s.days === 1 ? 'Vence mañana' : `Vence en ${s.days} días`}</span>`;
+    case 'porpagar': return `<span class="badge ${s.days <= 3 ? 'warn' : ''}">${s.days === 0 ? 'Vence hoy' : s.days === 1 ? 'Vence mañana' : `Vence en ${s.days} días`}</span>`;
     default: return `<span class="badge">Llega en ${plural(s.days, 'día', 'días')}</span>`;
   }
 }
@@ -712,27 +804,31 @@ function renderInicio() {
     </section>`;
   }
 
-  html += `<section class="stats">
+  const isCurrent = m === monthOf(todayISO());
+  const statsHtml = `<section class="stats">
     ${stat('Ingresos', tot.income, 'income')}
     ${stat('Gastos', tot.expense, 'expense', tot.onCard ? `${money(tot.onCard)} con tarjeta` : '')}
     ${stat('Ahorro e inversión', tot.saved, 'saving', rate !== null ? `${rate}% de tus ingresos` : '')}
     ${stat('Dinero disponible', tot.available, tot.available < 0 ? 'expense' : 'primary', 'En efectivo y en el banco')}
   </section>`;
 
-  html += alertsHtml(m, tot);
-
-  // Próximos pagos
-  const isCurrent = m === monthOf(todayISO());
-  if (isCurrent) {
+  if (isCurrent && hasAny) {
+    // Lo importante primero: cuánto puedes gastar, registrar rápido, avisos y próximos pagos
+    html += spendCard();
+    html += quickCard();
+    html += alertsHtml(m, tot);
     const occ = upcomingOccurrences(10);
     const cardRows = cards().map((d) => ({ d, i: debtInfo(d) })).filter(({ i }) => i.toPay > 0 && i.nextDue && i.daysToDue <= 10);
-    if (occ.length || cardRows.length) {
+    const rows = [...cardRows.map(({ d, i }) => cardDueRow(d, i)), ...occ.map(occRow)];
+    if (rows.length) {
       html += `<section class="card list-card">
-        <div class="card-head pad"><h2>Próximos pagos</h2><button class="link" data-action="goto" data-id="pagos">Ver todos</button></div>
-        ${cardRows.map(({ d, i }) => cardDueRow(d, i)).join('')}
-        ${occ.slice(0, 6).map(occRow).join('')}
+        <div class="card-head pad"><h2>Próximos pagos</h2><button class="link" data-action="goto" data-id="pagos">${rows.length > 3 ? `Ver los ${rows.length}` : 'Ver todos'}</button></div>
+        ${rows.slice(0, 3).join('')}
       </section>`;
     }
+    html += `<h2 class="section-title">Tu mes</h2>` + statsHtml;
+  } else {
+    html += statsHtml + alertsHtml(m, tot);
   }
 
   // Por cobrar
@@ -765,9 +861,58 @@ function renderInicio() {
   const recent = sortTx(txOfMonth(m)).slice(0, 5);
   html += `<section class="card list-card">
     <div class="card-head pad"><h2>Movimientos recientes</h2>${recent.length ? '<button class="link" data-action="goto" data-id="movimientos">Ver todos</button>' : ''}</div>
-    ${recent.length ? recent.map((t) => txRow(t, true)).join('') : emptyState('🧾', 'Aún no hay movimientos en ' + monthName(m) + '.')}
+    ${recent.length ? recent.map((t) => txRow(t, true)).join('') : emptyState('🧾', 'Aún no hay movimientos en ' + monthName(m) + '. Registra el primero.', '<button class="btn primary" data-action="new-tx" data-id="gasto">Registrar un gasto</button>')}
   </section>`;
   return html;
+}
+
+function spendCard() {
+  const s = spendingToday();
+  if (!(s.income > 0)) {
+    return `<section class="card spend">
+      <span class="spend-label">Puedes gastar hoy</span>
+      <p class="spend-msg">Registra lo que te entró este mes y te digo cuánto puedes gastar cada día.</p>
+      <button class="btn soft" data-action="new-tx" data-id="ingreso">💵 Registrar ingreso</button>
+    </section>`;
+  }
+  const bad = s.free <= 0 || s.left < 0;
+  let msg;
+  if (s.free + s.spentToday <= 0) msg = `Ya no te queda dinero libre este mes: tus gastos y pagos pendientes suman <b>${money(-(s.free + s.spentToday))}</b> más de lo que te entró.`;
+  else if (s.left < 0) msg = `Hoy llevas <b>${money(s.spentToday)}</b>, ${money(-s.left)} más de lo que te tocaba. Mañana tendrás un poco menos.`;
+  else if (s.spentToday > 0) msg = `Hoy llevas <b>${money(s.spentToday)}</b> de ${money(s.perDay)}. Te quedan <b>${money(s.free)}</b> libres para ${plural(s.daysLeft - 1, 'día más', 'días más')}.`;
+  else msg = `Te quedan <b>${money(s.free)}</b> libres para ${s.daysLeft === 1 ? 'hoy, último día del mes' : `los <b>${s.daysLeft} días</b> que faltan del mes`}.`;
+  return `<section class="card spend ${bad ? 'bad' : ''}">
+    <span class="spend-label">Puedes gastar hoy</span>
+    <strong class="spend-amt">${money(Math.max(0, s.left))}</strong>
+    <p class="spend-msg">${msg}</p>
+    <details>
+      <summary>¿Cómo se calcula?</summary>
+      <div class="facts">
+        <div><span>Te entró</span><b style="color:var(--income)">${money(s.income)}</b></div>
+        <div><span>Gastaste${s.onCard ? ' (con tarjeta: ' + money(s.onCard) + ')' : ''}</span><b style="color:var(--expense)">−${money(s.expense)}</b></div>
+        <div><span>Pagos fijos que faltan</span><b>−${money(s.fixed)}</b></div>
+        ${s.saved ? `<div><span>Ahorraste</span><b style="color:var(--saving)">−${money(s.saved)}</b></div>` : ''}
+      </div>
+      <p class="hint">Lo que queda libre se reparte entre los días que faltan del mes. Las compras con tarjeta cuentan como gasto el día que las haces, aunque la pagues después.</p>
+    </details>
+  </section>`;
+}
+
+function quickCard() {
+  const list = quickExpenses();
+  if (!list.length) return '';
+  const btns = list.map((g) => {
+    const label = g.note || g.category;
+    const sub = methodLabel(validCard(g.method) ? { cardId: g.method } : { method: g.method });
+    return `<button class="qbtn" data-action="quick-tx" data-cat="${esc(g.category)}" data-method="${esc(g.method)}" data-note="${esc(g.note)}" data-last="${g.lastAmount || ''}">
+      <span class="q-ico">${esc(emojiFor(g.category))}</span>
+      <span class="q-txt"><b>${esc(label)}</b><small>${esc(sub)}</small></span>
+    </button>`;
+  }).join('');
+  return `<section class="card">
+    <div class="card-head"><h2>Registro rápido</h2><span class="small muted">Toca y escribe el monto</span></div>
+    <div class="quick-grid">${btns}</div>
+  </section>`;
 }
 
 function alertsHtml(m, tot) {
@@ -799,6 +944,9 @@ function alertsHtml(m, tot) {
     const p = (exp[cat] || 0) / limit;
     if (p >= 1) out.push(alertBox('bad', '🚨', `Pasaste tu límite en <b>${esc(cat)}</b>: ${money(exp[cat])} de ${money(limit)}.`));
     else if (p >= 0.8) out.push(alertBox('', '🔔', `Llevas el ${Math.round(p * 100)}% de tu límite en <b>${esc(cat)}</b>.`));
+  }
+  if (isCurrent && state.settings.calHash && state.settings.calHash !== calendarHash()) {
+    out.push(alertBox('info', '📅', 'Cambiaste tus pagos. <b>Actualiza los avisos de tu calendario</b> para que coincidan.', 'data-action="goto" data-id="calendario"'));
   }
   const last = state.settings.lastBackup;
   const syncing = syncState.status !== 'off' && syncState.email;
@@ -1103,9 +1251,9 @@ function renderClientes() {
 function invoiceRow(inv, withClient = false) {
   const s = invoiceStatus(inv);
   const c = findClient(inv.clientId);
-  const badge = s.code === 'pagada' ? `<span class="badge good">Pagada ${shortDate(inv.paidDate)}</span>`
+  const badge = s.code === 'pagada' ? `<span class="badge">Pagada ${shortDate(inv.paidDate)}</span>`
     : s.code === 'atrasada' ? `<span class="badge bad">Atrasada ${plural(s.days, 'día', 'días')}</span>`
-      : `<span class="badge warn">${s.days === null ? 'Pendiente' : s.days === 0 ? 'Vence hoy' : `Vence en ${plural(s.days, 'día', 'días')}`}</span>`;
+      : `<span class="badge ${s.days !== null && s.days <= 3 ? 'warn' : ''}">${s.days === null ? 'Pendiente' : s.days === 0 ? 'Vence hoy' : `Vence en ${plural(s.days, 'día', 'días')}`}</span>`;
   const title = (withClient && c ? c.name + ' · ' : '') + (inv.number ? `Factura #${inv.number}` : 'Factura');
   const sub = [`Emitida ${shortDate(inv.issueDate)}`];
   if (inv.dueDate) sub.push(`vence ${shortDate(inv.dueDate)}`);
@@ -1165,6 +1313,7 @@ function renderMas() {
   return `<div class="tiles">
     <button class="tile" data-action="goto" data-id="metas"><span class="tile-ico">🎯</span><b>Metas y ahorro</b><span>${money(saved)} ahorrados</span></button>
     <button class="tile" data-action="goto" data-id="presupuesto"><span class="tile-ico">📊</span><b>Presupuesto</b><span>${money(tot.expense)} gastados este mes</span></button>
+    <button class="tile" data-action="goto" data-id="calendario"><span class="tile-ico">📅</span><b>Avisos en tu calendario</b><span>${state.settings.calExportedAt ? (state.settings.calHash !== calendarHash() ? 'Hay cambios por pasar' : 'Al día ✓') : 'Que tu celular te avise de tus pagos'}</span></button>
     <button class="tile" data-action="goto" data-id="ajustes"><span class="tile-ico">☁️</span><b>Sincronización</b><span>${syncText}</span></button>
     <button class="tile" data-action="goto" data-id="ajustes"><span class="tile-ico">⚙️</span><b>Ajustes</b><span>Moneda, categorías, respaldo</span></button>
   </div>`;
@@ -1355,7 +1504,8 @@ function renderAjustes() {
 
 const VIEWS = {
   inicio: renderInicio, movimientos: renderMovimientos, pagos: renderPagos, deudas: renderDeudas, clientes: renderClientes,
-  cliente: renderCliente, mas: renderMas, metas: renderMetas, presupuesto: renderPresupuesto, ajustes: renderAjustes
+  cliente: renderCliente, mas: renderMas, metas: renderMetas, presupuesto: renderPresupuesto, ajustes: renderAjustes,
+  calendario: renderCalendario
 };
 
 /* =========================================================
@@ -1404,6 +1554,7 @@ sheetForm.addEventListener('change', (e) => {
   if (sheetHandlers.onChange) sheetHandlers.onChange(e, sheetForm);
   syncDependentFields();
 });
+sheetForm.addEventListener('input', () => { const box = sheetForm.querySelector('.form-error'); if (box) box.remove(); });
 sheetForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!sheetHandlers.onSubmit) return closeSheet();
@@ -1413,7 +1564,7 @@ sheetForm.addEventListener('submit', (e) => {
   closeSheet();
   afterChange(typeof result === 'string' ? result : '');
 });
-sheetForm.addEventListener('click', (e) => {
+sheetForm.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-sheet]');
   if (!b) {
     const quick = e.target.closest('[data-fill]');
@@ -1422,7 +1573,7 @@ sheetForm.addEventListener('click', (e) => {
   }
   if (b.dataset.sheet === 'close') closeSheet();
   if (b.dataset.sheet === 'delete' && sheetHandlers.onDelete) {
-    const result = sheetHandlers.onDelete();
+    const result = await sheetHandlers.onDelete();
     if (result === false) return;
     closeSheet();
     afterChange(typeof result === 'string' ? result : 'Eliminado');
@@ -1430,7 +1581,47 @@ sheetForm.addEventListener('click', (e) => {
 });
 sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
 
-function fail(msg) { toast(msg, 'error'); return false; }
+/**
+ * Modal para decisiones. Devuelve una promesa con true (aceptó) o false.
+ * ask('¿Eliminar…?', { title, ok: 'Eliminar', danger: true }) · Para un aviso con un solo botón: { cancel: null }
+ */
+function ask(message, { title = '¿Estás seguro?', ok = 'Aceptar', cancel = 'Cancelar', danger = false } = {}) {
+  const dlg = $('#ask');
+  if (dlg.open) return Promise.resolve(false);
+  $('#askTitle').textContent = title;
+  $('#askText').textContent = message;
+  const yes = $('#askYes'), no = $('#askNo');
+  yes.textContent = ok;
+  yes.className = 'btn ' + (danger ? 'danger' : 'primary');
+  no.hidden = cancel === null;
+  no.textContent = cancel || '';
+  dlg.returnValue = '';
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'yes'), { once: true });
+    dlg.showModal();
+    (cancel === null || !danger ? yes : no).focus();
+  });
+}
+
+const confirmDelete = (message) => ask(message, { title: 'Eliminar', ok: 'Eliminar', danger: true });
+
+/** Errores: dentro del formulario si está abierto (no se van solos); si no, en un aviso que hay que cerrar. */
+function fail(msg) {
+  if (sheet.open) {
+    let box = sheetForm.querySelector('.form-error');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'form-error';
+      box.setAttribute('role', 'alert');
+      sheetForm.querySelector('.sheet-body').prepend(box);
+    }
+    box.textContent = '⚠️ ' + msg;
+    box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } else {
+    ask(msg, { title: 'Revisa esto', ok: 'Entendido', cancel: null });
+  }
+  return false;
+}
 
 const field = (label, inner, attrs = '') => `<label class="field" ${attrs}><span>${label}</span>${inner}</label>`;
 const amountInput = (name, value, extra = '') =>
@@ -1451,12 +1642,14 @@ function txForm(tx, presetType = 'gasto', preset = {}) {
   const goals = state.goals;
   const loans = state.debts.filter((d) => d.kind !== 'tarjeta' && (debtInfo(d).owed > 0 || (tx && tx.debtId === d.id)));
   const goalId = tx?.goalId || preset.goalId || goals[0]?.id || '';
-  const method = tx ? methodValue(tx) : (validCard(preset.cardId) || defaultMethod());
+  const presetMethod = validCard(preset.method) || (PAY_METHODS[preset.method] ? preset.method : '');
+  const method = tx ? methodValue(tx) : (presetMethod || validCard(preset.cardId) || defaultMethod());
   const body = `
     <div class="seg" role="radiogroup" aria-label="Tipo">
       ${['ingreso', 'gasto', 'ahorro'].map((t) => `<label class="seg-item seg-${t}"><input type="radio" name="type" value="${t}" ${t === type ? 'checked' : ''}><span>${TYPE_LABEL[t]}</span></label>`).join('')}
     </div>
     ${field('Monto', amountInput('amount', tx ? Math.abs(tx.amount) : (preset.amount || ''), 'data-autofocus required'))}
+    ${!tx && preset.lastAmount > 0 ? quickFill([['La última vez', preset.lastAmount]]) : ''}
     ${field('Categoría', `<select name="category">${options(state.categories.ingreso, tx?.type === 'ingreso' ? tx.category : state.categories.ingreso[0])}</select>`, 'data-for="ingreso"')}
     ${field('Categoría', `<select name="category">${options(state.categories.gasto, tx?.type === 'gasto' ? tx.category : (preset.category || state.categories.gasto[0]))}</select>`, 'data-for="gasto"')}
     ${field('¿Con qué pagaste?', `<select name="method">${methodOptions(method)}</select>`, 'data-for="gasto"')}
@@ -1504,8 +1697,8 @@ function txForm(tx, presetType = 'gasto', preset = {}) {
       if (!tx) state.transactions.push(t);
       return tx ? 'Movimiento actualizado' : (t.cardId ? `Gasto guardado en ${findDebt(t.cardId).name}` : 'Movimiento guardado');
     },
-    onDelete: tx ? () => {
-      if (!confirm('¿Eliminar este movimiento?')) return false;
+    onDelete: tx ? async () => {
+      if (!(await confirmDelete('¿Eliminar este movimiento?'))) return false;
       deleteTx(tx);
       return 'Movimiento eliminado';
     } : null
@@ -1563,8 +1756,8 @@ function debtForm(d, kindPreset = 'prestamo') {
       }
       return data.kind === 'tarjeta' ? 'Tarjeta guardada' : 'Deuda guardada';
     },
-    onDelete: d ? () => {
-      if (!confirm(`¿Eliminar "${d.name}"? Los pagos y compras que registraste se conservarán como movimientos.`)) return false;
+    onDelete: d ? async () => {
+      if (!(await confirmDelete(`¿Eliminar "${d.name}"? Los pagos y compras que registraste se conservarán como movimientos.`))) return false;
       state.debts = state.debts.filter((x) => x.id !== d.id);
       for (const t of state.transactions) {
         if (t.debtId === d.id) { delete t.debtId; if (t.type === 'pago') { t.type = 'gasto'; t.category = 'Deudas'; } }
@@ -1605,7 +1798,7 @@ function payDebtForm(d, tx = null) {
       if (d && debtInfo(d).owed <= 0 && !isCard) return `¡Felicidades! Saldaste “${d.name}” 🎉`;
       return tx ? 'Pago actualizado' : 'Pago registrado';
     },
-    onDelete: tx ? () => { if (!confirm('¿Eliminar este pago?')) return false; deleteTx(tx); return 'Pago eliminado'; } : null
+    onDelete: tx ? async () => { if (!(await confirmDelete('¿Eliminar este pago?'))) return false; deleteTx(tx); return 'Pago eliminado'; } : null
   });
 }
 
@@ -1669,8 +1862,8 @@ function recForm(r, kindPreset = 'factura') {
       if (!r && fields.autopay) setTimeout(() => { if (runAutomations()) render(); }, 0);
       return 'Pago fijo guardado';
     },
-    onDelete: r ? () => {
-      if (!confirm(`¿Eliminar "${r.name}"? Los pagos que ya registraste se conservan como gastos.`)) return false;
+    onDelete: r ? async () => {
+      if (!(await confirmDelete(`¿Eliminar "${r.name}"? Los pagos que ya registraste se conservan como gastos.`))) return false;
       state.recurring = state.recurring.filter((x) => x.id !== r.id);
       for (const t of state.transactions) if (t.recurringId === r.id) { delete t.recurringId; delete t.period; }
       return 'Pago fijo eliminado';
@@ -1742,9 +1935,9 @@ function clientForm(c) {
       ui.clientId = nc.id; ui.tab = 'cliente';
       return 'Cliente agregado. Ahora agrega las facturas que te debe.';
     },
-    onDelete: c ? () => {
+    onDelete: c ? async () => {
       const n = state.invoices.filter((i) => i.clientId === c.id).length;
-      if (!confirm(`¿Eliminar a "${c.name}"?${n ? ` También se borrarán sus ${n} facturas (los cobros ya registrados se quedan como ingresos).` : ''}`)) return false;
+      if (!(await confirmDelete(`¿Eliminar a "${c.name}"?${n ? ` También se borrarán sus ${n} facturas (los cobros ya registrados se quedan como ingresos).` : ''}`))) return false;
       state.clients = state.clients.filter((x) => x.id !== c.id);
       const ids = new Set(state.invoices.filter((i) => i.clientId === c.id).map((i) => i.id));
       state.invoices = state.invoices.filter((i) => !ids.has(i.id));
@@ -1783,16 +1976,16 @@ function invoiceForm(inv, clientId) {
       else state.invoices.push({ id: uid(), createdAt: Date.now(), clientId: c.id, paidDate: null, ...fields });
       return 'Factura guardada';
     },
-    onDelete: inv ? () => {
-      if (!confirm('¿Eliminar esta factura?' + (inv.txId ? ' El ingreso que registraste por ella se conserva.' : ''))) return false;
+    onDelete: inv ? async () => {
+      if (!(await confirmDelete('¿Eliminar esta factura?' + (inv.txId ? ' El ingreso que registraste por ella se conserva.' : '')))) return false;
       state.invoices = state.invoices.filter((x) => x.id !== inv.id);
       for (const t of state.transactions) if (t.invoiceId === inv.id) delete t.invoiceId;
       return 'Factura eliminada';
     } : null
   });
   const unpay = sheetForm.querySelector('[data-action-sheet="unpay"]');
-  if (unpay) unpay.addEventListener('click', () => {
-    if (!confirm('¿Marcar como no pagada? Se borrará el ingreso que se registró por este cobro.')) return;
+  if (unpay) unpay.addEventListener('click', async () => {
+    if (!(await ask('Se borrará el ingreso que se registró por este cobro.', { title: '¿Marcar como no pagada?', ok: 'Marcar no pagada', danger: true }))) return;
     const tx = state.transactions.find((t) => t.invoiceId === inv.id);
     if (tx) state.transactions = state.transactions.filter((t) => t !== tx);
     inv.paidDate = null; delete inv.paidAmount; delete inv.txId;
@@ -1851,9 +2044,9 @@ function goalForm(g, preset = {}) {
       } else state.goals.push({ id: uid(), createdAt: Date.now(), initial: saved, ...fields });
       return 'Meta guardada';
     },
-    onDelete: g ? () => {
+    onDelete: g ? async () => {
       const n = state.transactions.filter((t) => t.goalId === g.id).length;
-      if (!confirm(`¿Eliminar la meta "${g.name}"?${n ? ` También se borrarán sus ${n} aportes/retiros.` : ''}`)) return false;
+      if (!(await confirmDelete(`¿Eliminar la meta "${g.name}"?${n ? ` También se borrarán sus ${n} aportes/retiros.` : ''}`))) return false;
       state.goals = state.goals.filter((x) => x.id !== g.id);
       state.transactions = state.transactions.filter((t) => t.goalId !== g.id);
       return 'Meta eliminada';
@@ -1945,14 +2138,14 @@ function downloadBackup() { downloadBlob(backupBlob(), `misfinanzas-respaldo-${t
 
 function importBackup(file) {
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     let obj;
     try { obj = JSON.parse(reader.result); } catch (_) { return fail('Ese archivo no es un respaldo válido'); }
     const data = obj && obj.data ? obj.data : obj;
     if (!data || !Array.isArray(data.transactions)) return fail('Ese archivo no es un respaldo de Mis Finanzas');
     const when = obj.exportedAt ? ` del ${new Date(obj.exportedAt).toLocaleString(LOCALE)}` : '';
     const msg = `Respaldo${when}:\n• ${data.transactions.length} movimientos\n• ${(data.debts || []).length} deudas/tarjetas\n• ${(data.recurring || []).length} pagos fijos\n• ${(data.clients || []).length} clientes\n• ${(data.goals || []).length} metas\n\nReemplazará los datos actuales${syncState.email ? ' (también en tus otros dispositivos)' : ''}. ¿Continuar?`;
-    if (!confirm(msg)) return;
+    if (!(await ask(msg, { title: 'Importar respaldo', ok: 'Reemplazar mis datos', danger: true }))) return;
     try { localStorage.setItem('misfinanzas:antes-de-importar', JSON.stringify(state)); } catch (_) { }
     state = normalize(data);
     applyTheme();
@@ -1960,6 +2153,201 @@ function importBackup(file) {
   };
   reader.onerror = () => fail('No se pudo leer el archivo');
   reader.readAsText(file);
+}
+
+/* =========================================================
+   Recordatorios en el calendario del celular (archivo .ics)
+   ========================================================= */
+const CAL_KINDS = { fixed: '🧾 Pagos fijos (facturas, suscripciones, pensión)', cards: '💳 Fecha límite de la tarjeta', loans: '🏦 Cuotas de préstamos', clients: '💼 Cobros a clientes' };
+
+/** Regla mensual para "el día N" (si el mes es más corto, usa su último día). */
+function monthlyRule(day) {
+  const d = clamp(Number(day) || 1, 1, 31);
+  if (d <= 28) return `FREQ=MONTHLY;BYMONTHDAY=${d}`;
+  const days = []; for (let i = 28; i <= d; i++) days.push(i);
+  return `FREQ=MONTHLY;BYMONTHDAY=${days.join(',')};BYSETPOS=-1`;
+}
+
+/** Lista de recordatorios según lo que tienes registrado. */
+function calendarEvents(inc = state.settings.calInclude || {}) {
+  const t = todayISO(), cm = monthOf(t), year = cm.slice(0, 4);
+  const out = [];
+  const amt = (n, approx) => (n > 0 ? ` — ${approx ? '~' : ''}${money(n)}` : '');
+  const add = (e) => out.push({ alarm: true, ...e });
+
+  if (inc.fixed) for (const r of state.recurring) {
+    if (r.active === false) continue;
+    const verb = r.autopay ? 'Se cobra' : 'Pagar';
+    const summary = `${REC_EMOJI[r.kind] || '📌'} ${verb} ${r.name}${amt(r.amount, r.variable)}`;
+    const desc = [REC_KIND_ONE[r.kind], 'Método: ' + methodLabel(r).replace(/^\S+ /, ''),
+      r.arriveDay && r.frequency !== 'quincenal' ? `La factura llega el día ${r.arriveDay}` : '',
+      r.autopay ? 'Se cobra solo (domiciliado).' : 'Regístralo en la app cuando lo pagues.'].filter(Boolean).join('\n');
+    if (r.frequency === 'anual') {
+      const mo = clamp(Number(r.month) || 1, 1, 12);
+      const d = clamp(Number(r.dueDay) || 1, 1, mo === 2 ? 28 : daysInMonth(`${year}-${String(mo).padStart(2, '0')}`));
+      add({ uid: `rec-${r.id}`, summary, desc, start: dateFor(`${year}-${String(mo).padStart(2, '0')}`, d), rule: `FREQ=YEARLY;BYMONTH=${mo};BYMONTHDAY=${d}`, alarm: !r.autopay });
+    } else if (r.frequency === 'quincenal') {
+      add({ uid: `rec-${r.id}-1`, summary, desc, start: dateFor(cm, r.dueDay), rule: monthlyRule(r.dueDay), alarm: !r.autopay });
+      add({ uid: `rec-${r.id}-2`, summary, desc, start: dateFor(cm, r.dueDay2 || 30), rule: monthlyRule(r.dueDay2 || 30), alarm: !r.autopay });
+    } else {
+      add({ uid: `rec-${r.id}`, summary, desc, start: dateFor(cm, r.dueDay), rule: monthlyRule(r.dueDay), alarm: !r.autopay });
+    }
+  }
+
+  if (inc.cards) for (const d of cards()) {
+    if (d.dueDay) add({ uid: `card-${d.id}`, summary: `💳 Pagar tarjeta ${d.name}`, desc: 'Último día para pagar el saldo al corte sin generar intereses. Abre la app para ver el monto exacto.', start: dateFor(cm, d.dueDay), rule: monthlyRule(d.dueDay) });
+    if (d.cutDay) add({ uid: `cut-${d.id}`, summary: `✂️ Corte de ${d.name}`, desc: 'Hoy cierra el periodo de tu tarjeta. Desde mañana tus compras van al siguiente estado de cuenta.', start: dateFor(cm, d.cutDay), rule: monthlyRule(d.cutDay), alarm: false });
+  }
+
+  if (inc.loans) for (const d of state.debts) {
+    if (d.kind === 'tarjeta' || !d.dueDay) continue;
+    const i = debtInfo(d);
+    if (i.owed <= 0) continue;
+    const count = Number.isFinite(i.months) && i.months > 0 ? `;COUNT=${Math.min(i.months, 600)}` : '';
+    add({ uid: `loan-${d.id}`, summary: `${DEBT_EMOJI[d.kind] || '🏦'} Cuota de ${d.name}${amt(d.minPayment)}`, desc: `Te faltan ${money(i.owed)} por pagar.`, start: dateFor(cm, d.dueDay), rule: monthlyRule(d.dueDay) + count });
+  }
+
+  if (inc.clients) {
+    const fixedClients = new Set();
+    for (const c of state.clients) {
+      if (c.active === false || !(c.amount > 0)) continue;
+      const days = c.frequency === 'mensual' ? [c.billingDay || 1] : c.frequency === 'quincenal' ? [c.billingDay || 1, c.billingDay2 || 16] : [];
+      days.forEach((bd, k) => {
+        fixedClients.add(c.id);
+        // Día del mes en que vence (factura + plazo), igual todos los meses
+        const dueDay = ((Number(bd) - 1 + (Number(c.terms) || 0)) % 30) + 1;
+        add({
+          uid: `client-${c.id}${k ? '-2' : ''}`, summary: `💼 Cobrar a ${c.name}${amt(c.amount)}`,
+          desc: `Factura del día ${bd}${Number(c.terms) ? `, con ${c.terms} días de plazo` : ''}. Márcala como cobrada en la app cuando te paguen.`,
+          start: dateFor(cm, dueDay), rule: monthlyRule(dueDay)
+        });
+      });
+    }
+    // Facturas sueltas por cobrar (clientes por proyecto o semanales)
+    for (const inv of state.invoices) {
+      const c = findClient(inv.clientId);
+      if (!c || inv.paidDate || !inv.dueDate || inv.dueDate < t || fixedClients.has(c.id)) continue;
+      add({ uid: `inv-${inv.id}`, summary: `💼 Vence factura${inv.number ? ' #' + inv.number : ''} de ${c.name}${amt(inv.amount)}`, desc: 'Fecha límite de pago de tu cliente.', start: inv.dueDate, rule: null, single: true });
+    }
+  }
+  return out.sort((a, b) => a.start.localeCompare(b.start));
+}
+
+/** Huella de lo que hay en el calendario (sin fechas que cambian cada mes ni facturas sueltas). */
+function calendarHash(events = calendarEvents()) {
+  const str = JSON.stringify([state.settings.calDays, events.filter((e) => !e.single).map((e) => [e.uid, e.summary, e.rule.replace(/;COUNT=\d+/, ''), e.alarm])]);
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+function icsText(events) {
+  const enc = new TextEncoder();
+  const esc2 = (s) => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  const fold = (line) => { // Máximo 75 bytes por línea, sin partir caracteres
+    const parts = []; let cur = '', bytes = 0;
+    for (const ch of line) {
+      const n = enc.encode(ch).length;
+      if (bytes + n > (parts.length ? 74 : 75)) { parts.push(cur); cur = ''; bytes = 0; }
+      cur += ch; bytes += n;
+    }
+    parts.push(cur);
+    return parts.join('\r\n ');
+  };
+  const ymd = (s) => s.replace(/-/g, '');
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  const days = clamp(Number(state.settings.calDays) || 0, 0, 7);
+  const link = location.origin + location.pathname;
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Mis Finanzas//ES', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Mis Finanzas'];
+  for (const e of events) {
+    lines.push('BEGIN:VEVENT', `UID:${e.uid}@misfinanzas`, `DTSTAMP:${stamp}`,
+      `DTSTART;VALUE=DATE:${ymd(e.start)}`, `DTEND;VALUE=DATE:${ymd(addDays(e.start, 1))}`,
+      `SUMMARY:${esc2(e.summary)}`, `DESCRIPTION:${esc2(e.desc + '\n\nAbrir Mis Finanzas: ' + link)}`, 'TRANSP:TRANSPARENT');
+    if (e.rule) lines.push('RRULE:' + e.rule);
+    if (e.alarm) {
+      // Aviso a las 9:00 de la mañana: unos días antes y el mismo día
+      if (days > 0) lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc2(e.summary)}`, `TRIGGER:-P${days - 1 ? days - 1 + 'D' : ''}T15H`, 'END:VALARM');
+      lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc2(e.summary)}`, 'TRIGGER:PT9H', 'END:VALARM');
+    }
+    lines.push('END:VEVENT');
+  }
+  lines.push('END:VCALENDAR');
+  return lines.map(fold).join('\r\n') + '\r\n';
+}
+
+async function exportCalendar(share) {
+  const events = calendarEvents();
+  if (!events.length) return fail('No hay nada que pasar al calendario con lo que elegiste');
+  const name = 'mis-finanzas-recordatorios.ics';
+  const blob = new Blob([icsText(events)], { type: 'text/calendar;charset=utf-8' });
+  const done = () => { state.settings.calHash = calendarHash(events); state.settings.calExportedAt = Date.now(); afterChange('Archivo listo: ábrelo para agregarlo a tu calendario'); };
+  if (share) {
+    let file = null;
+    try { file = new File([blob], name, { type: 'text/calendar' }); } catch (_) { }
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'Recordatorios de Mis Finanzas' }); return done(); }
+      catch (e) { if (e && e.name === 'AbortError') return; }
+    }
+  }
+  downloadBlob(blob, name);
+  done();
+}
+
+function renderCalendario() {
+  const s = state.settings;
+  const inc = s.calInclude || {};
+  const events = calendarEvents();
+  const outdated = s.calHash && s.calHash !== calendarHash(events);
+  const canShare = typeof navigator.share === 'function';
+  const when = s.calExportedAt ? new Date(s.calExportedAt).toLocaleDateString(LOCALE, { dateStyle: 'medium' }) : null;
+  const dayTxt = (e) => e.rule ? (e.rule.startsWith('FREQ=YEARLY') ? 'Cada año, ' + shortDate(e.start) : `Cada mes, día ${e.rule.includes('BYSETPOS') ? Number(e.start.slice(8)) + ' (o el último)' : Number(e.start.slice(8))}`) : shortDate(e.start);
+
+  return `${outdated ? alertBox('', '🔄', 'Cambiaste tus pagos desde la última vez. <b>Vuelve a pasar el archivo</b> a tu calendario (mira abajo cómo actualizarlo).') : ''}
+    <section class="card">
+      <h2>📅 Avisos en tu calendario</h2>
+      <p class="small muted">Tu calendario del celular te avisará de tus pagos aunque no abras la app y aunque no tengas internet.</p>
+      <h3 class="small muted" style="margin:12px 0 6px">¿Qué quieres pasar?</h3>
+      ${Object.entries(CAL_KINDS).map(([k, label]) => `<label class="check"><input type="checkbox" data-cal="${k}" ${inc[k] ? 'checked' : ''}><span>${label}</span></label>`).join('')}
+      <label class="setting"><span>Avisarme</span><select data-calsetting="calDays">
+        ${[[0, 'Solo el mismo día'], [1, '1 día antes'], [2, '2 días antes'], [3, '3 días antes'], [5, '5 días antes']]
+          .map(([v, l]) => `<option value="${v}" ${Number(s.calDays) === v ? 'selected' : ''}>${l}</option>`).join('')}
+      </select></label>
+      <p class="hint">Los avisos llegan a las 9:00 de la mañana${Number(s.calDays) > 0 ? ', y también el mismo día' : ''}. Los cobros automáticos y el corte de la tarjeta aparecen en el calendario, pero sin aviso.</p>
+      <div class="btn-row" style="margin-top:14px">
+        ${canShare ? '<button class="btn primary" data-action="cal-share">📤 Pasar al calendario</button>' : ''}
+        <button class="btn ${canShare ? '' : 'primary'}" data-action="cal-download">⬇️ Descargar archivo</button>
+      </div>
+      ${when ? `<p class="hint">Última vez: ${esc(when)}</p>` : ''}
+    </section>
+
+    <section class="card list-card">
+      <div class="card-head pad"><h2>Se agregarán ${plural(events.length, 'recordatorio', 'recordatorios')}</h2></div>
+      ${events.length ? events.map((e) => `<div class="row"><span class="row-main"><span class="row-title">${esc(e.summary)}</span><span class="row-sub">${esc(dayTxt(e))}${e.alarm ? '' : ' · sin aviso'}</span></span></div>`).join('')
+        : emptyState('📭', 'Todavía no hay pagos, tarjetas ni clientes con fechas para pasar.')}
+    </section>
+
+    <section class="card">
+      <h2>Cómo agregarlo</h2>
+      <details class="howto" open><summary>📱 iPhone</summary>
+        <ol>
+          <li>Toca <b>Pasar al calendario</b> (o <b>Descargar archivo</b>).</li>
+          <li>Elige <b>Calendario</b>, o abre el archivo y toca <b>Agregar todos</b>.</li>
+          <li>Si te pregunta en qué calendario, elige uno llamado <b>Mis Finanzas</b> (créalo antes en la app Calendario → Calendarios → Agregar calendario).</li>
+        </ol>
+        <p class="hint">Si no pasa nada desde la app instalada, abre la app en Safari y hazlo desde ahí.</p>
+      </details>
+      <details class="howto"><summary>🤖 Android</summary>
+        <ol>
+          <li>Toca <b>Descargar archivo</b> y ábrelo desde la notificación o desde <b>Descargas</b>.</li>
+          <li>Elige tu app de calendario (Samsung Calendar u otra) y toca <b>Agregar / Importar</b>.</li>
+          <li><b>Si usas Google Calendar:</b> en la computadora entra a calendar.google.com → ⚙️ Configuración → <b>Importar y exportar</b> → elige el archivo. Impórtalo en un calendario llamado <b>Mis Finanzas</b>.</li>
+          <li>En Google Calendar revisa que ese calendario tenga avisos: Configuración → Mis Finanzas → <b>Notificaciones de eventos de todo el día</b> → agrega “1 día antes a las 9:00”. Google no siempre respeta los avisos del archivo.</li>
+        </ol>
+      </details>
+      <details class="howto"><summary>🔄 Para actualizarlo después</summary>
+        <p class="small">Si agregas o cambias pagos, la app te avisará. Para no tener recordatorios repetidos: borra el calendario <b>Mis Finanzas</b> de tu celular, créalo otra vez y vuelve a pasar el archivo.</p>
+      </details>
+    </section>`;
 }
 
 function exportCSV() {
@@ -2023,6 +2411,10 @@ function occFrom(el) {
 const ACTIONS = {
   'goto': (id) => go(id),
   'new-tx': (id) => txForm(null, id || 'gasto'),
+  'quick-tx': (_, el) => {
+    const d = el.dataset;
+    txForm(null, 'gasto', { category: d.cat, method: d.method, note: d.note, lastAmount: Number(d.last) || 0, title: emojiFor(d.cat) + ' ' + (d.note || d.cat) });
+  },
   'edit-tx': (id) => { const t = state.transactions.find((x) => x.id === id); if (t) txForm(t); },
   'filter': (id) => { ui.txFilter = id; render(); },
   'pay-filter': (id) => { ui.payFilter = id; render(); },
@@ -2034,13 +2426,13 @@ const ACTIONS = {
   'strategy': (id) => { ui.debtStrategy = id; render(); },
   'new-rec': (id) => recForm(null, id || 'factura'),
   'edit-rec': (id) => { const r = findRec(id); if (r) recForm(r); },
-  'occ': (_, el) => {
+  'occ': async (_, el) => {
     const o = occFrom(el);
     if (!o) return;
     const s = occStatus(o);
     if (s.code === 'pagada') return txForm(s.tx);
     if (s.code === 'omitida') {
-      if (confirm(`¿Volver a marcar "${o.r.name}" como pendiente este mes?`)) { o.r.skip = (o.r.skip || []).filter((p) => p !== o.period); afterChange('Marcado como pendiente'); }
+      if (await ask(`¿Volver a marcar "${o.r.name}" como pendiente este mes?`, { title: 'Pago omitido', ok: 'Marcar pendiente' })) { o.r.skip = (o.r.skip || []).filter((p) => p !== o.period); afterChange('Marcado como pendiente'); }
       return;
     }
     payRecForm(o);
@@ -2068,6 +2460,8 @@ const ACTIONS = {
   'edit-limit': (id) => limitForm(id),
   'edit-split': () => splitForm(),
   'edit-income': () => incomeForm(),
+  'cal-share': () => exportCalendar(true),
+  'cal-download': () => exportCalendar(false),
   'share-backup': () => shareBackup(),
   'download-backup': () => downloadBackup(),
   'import': () => { const inp = $('#importFile'); inp.value = ''; inp.click(); },
@@ -2075,7 +2469,7 @@ const ACTIONS = {
   'sign-up': () => doAuth('up'),
   'reset-pw': () => doAuth('reset'),
   'sign-out': async () => {
-    if (!confirm('¿Cerrar sesión? Tus datos se quedan en este dispositivo, pero dejarán de sincronizarse.')) return;
+    if (!(await ask('Tus datos se quedan en este dispositivo, pero dejarán de sincronizarse.', { title: '¿Cerrar sesión?', ok: 'Cerrar sesión' }))) return;
     try { await window.Sync.signOut(); toast('Sesión cerrada'); } catch (e) { fail(authMsg(e)); }
   },
   'sync-now': () => { if (window.Sync) { window.App.markAllPending(); window.Sync.flush(); toast('Sincronizando…'); refreshSyncUi(); } },
@@ -2089,17 +2483,17 @@ const ACTIONS = {
     if (type === 'gasto' && !state.catGroup[name]) state.catGroup[name] = 'wants';
     afterChange('Categoría agregada');
   },
-  'del-cat': (id, el) => {
+  'del-cat': async (id, el) => {
     const type = el.dataset.type;
     if (state.categories[type].length <= 1) return fail('Debe quedar al menos una categoría');
-    if (!confirm(`¿Quitar la categoría "${id}"? Los movimientos que ya la usan no se borran.`)) return;
+    if (!(await ask(`Los movimientos que ya usan "${id}" no se borran.`, { title: '¿Quitar la categoría?', ok: 'Quitar', danger: true }))) return;
     state.categories[type] = state.categories[type].filter((c) => c !== id);
     afterChange('Categoría quitada');
   },
-  'reset': () => {
+  'reset': async () => {
     const where = syncState.email ? ' de este dispositivo y de tu cuenta (en todos tus dispositivos)' : ' de este dispositivo';
-    if (!confirm(`¿Seguro? Se borrarán TODOS tus movimientos, deudas, pagos fijos, clientes y metas${where}.`)) return;
-    if (!confirm('Esta acción no se puede deshacer. ¿Borrar todo?')) return;
+    if (!(await ask(`Se borrarán TODOS tus movimientos, deudas, pagos fijos, clientes y metas${where}.`, { title: '¿Borrar todos tus datos?', ok: 'Sí, continuar', danger: true }))) return;
+    if (!(await ask('Esta acción no se puede deshacer.', { title: '¿Borrar todo?', ok: 'Borrar todo', danger: true }))) return;
     const keep = { currency: state.settings.currency, theme: state.settings.theme };
     state = defaultState();
     Object.assign(state.settings, keep);
@@ -2124,6 +2518,9 @@ view.addEventListener('input', (e) => {
   }
 });
 view.addEventListener('change', (e) => {
+  const cal = e.target.dataset.cal;
+  if (cal) { state.settings.calInclude = { ...(state.settings.calInclude || {}), [cal]: e.target.checked }; return afterChange(); }
+  if (e.target.dataset.calsetting) { state.settings.calDays = Number(e.target.value) || 0; return afterChange('Ajuste guardado'); }
   const key = e.target.dataset.setting;
   if (!key) return;
   state.settings[key] = e.target.value;
@@ -2160,8 +2557,8 @@ function applyTheme() {
   const t = state.settings.theme;
   if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
   else delete document.documentElement.dataset.theme;
-  const dark = t === 'dark' || (t !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-  $('meta[name="theme-color"]').setAttribute('content', dark ? '#0b1115' : '#0f766e');
+  // La barra superior es azul marino en modo claro y oscuro
+  $('meta[name="theme-color"]').setAttribute('content', '#0f2350');
 }
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
 
@@ -2171,7 +2568,7 @@ function toast(msg, kind = '') {
   el.textContent = msg;
   el.className = 'show ' + kind;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.className = kind; }, 2800);
+  toastTimer = setTimeout(() => { el.className = kind; }, 4000);
 }
 
 // Otra pestaña de este mismo dispositivo cambió los datos

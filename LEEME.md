@@ -7,12 +7,17 @@ Funciona **sin internet**, se instala en el celular como una app y se **sincroni
 
 | Sección | Para qué sirve |
 |---|---|
-| **Inicio** | Resumen del mes, efectivo disponible, próximos pagos, lo que te deben tus clientes, alertas y gráficas. |
+| **Inicio** | Cuánto puedes gastar hoy, botones de registro rápido con tus gastos frecuentes, avisos, próximos pagos, resumen del mes, lo que te deben tus clientes y gráficas. |
 | **Registro** | Ingresos, gastos (en efectivo o con tarjeta) y aportes a metas. Buscar y filtrar. |
 | **Pagos** | Facturas y servicios, suscripciones, pensión alimenticia: día en que llega la factura, día límite de pago, estado (por llegar, por pagar, vencida, pagada). Las suscripciones domiciliadas se registran solas. |
 | **Tarjetas** | Tu tarjeta de crédito: saldo, saldo al corte, cuánto pagar para no generar intereses y antes de qué fecha, uso del límite. También préstamos y otras deudas. |
 | **Clientes** | Cuánto te paga cada cliente y cada cuánto, sus facturas, cuánto te deben y cuántas facturas están atrasadas. Crea las facturas del mes con un toque. |
-| **Más** | Metas de ahorro e inversión, presupuesto 50/30/20, ajustes, sincronización y respaldo. |
+| **Más** | Metas de ahorro e inversión, presupuesto 50/30/20, avisos en el calendario del celular, ajustes, sincronización y respaldo. |
+
+### Avisos en el calendario del celular
+En **Más → Avisos en tu calendario** eliges qué pasar (pagos fijos, tarjeta, préstamos, cobros a clientes) y cuántos días antes avisarte.
+La app crea un archivo `.ics` que agregas a tu calendario; desde ahí el celular te avisa aunque no abras la app.
+Si cambias tus pagos, la app te avisa para que vuelvas a pasarlo (borra antes el calendario “Mis Finanzas” para no duplicar).
 
 ### Cómo funciona la tarjeta de crédito
 - Cada gasto que registres “con tarjeta” se suma a lo que le debes.
