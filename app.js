@@ -470,7 +470,18 @@ function monthlyEquivalent(r) {
   const a = Number(r.amount) || 0;
   return r.frequency === 'quincenal' ? a * 2 : r.frequency === 'anual' ? a / 12 : a;
 }
-function methodLabel(cardId) { const c = cardId && findDebt(cardId); return c ? '💳 ' + c.name : '💵 Efectivo/débito'; }
+/* --- Métodos de pago: efectivo, transferencia, débito o una tarjeta de crédito --- */
+const PAY_METHODS = { cash: '💵 Efectivo', transfer: '🏦 Transferencia', debit: '🏧 Tarjeta de débito' };
+/** Valor para el selector: id de la tarjeta de crédito o 'cash' | 'transfer' | 'debit'. */
+function methodValue(o) { return o && o.cardId && findDebt(o.cardId) ? o.cardId : (o && PAY_METHODS[o.method] ? o.method : 'cash'); }
+/** Guarda en el registro el método elegido en el selector. */
+function applyMethod(target, value) {
+  delete target.cardId; delete target.method;
+  if (validCard(value)) target.cardId = value;
+  else target.method = PAY_METHODS[value] ? value : 'cash';
+}
+function methodLabel(o) { const c = o && o.cardId && findDebt(o.cardId); return c ? '💳 ' + c.name : PAY_METHODS[(o && o.method) || 'cash'] || PAY_METHODS.cash; }
+function defaultMethod() { const v = state.settings.lastMethod; return validCard(v) || (PAY_METHODS[v] ? v : 'cash'); }
 
 /** Pagos fijos sin pagar que vencieron o vencen pronto. */
 function upcomingOccurrences(daysAhead = 10) {
@@ -543,7 +554,7 @@ function runAutomations() {
       const id = `auto_${r.id}_${o.period}`;
       if (state.transactions.some((x) => x.id === id)) continue;
       const tx = { id, createdAt: Date.now(), type: 'gasto', amount: r.amount, category: r.category, date: o.due, note: r.name, recurringId: r.id, period: o.period, auto: true };
-      if (r.cardId && findDebt(r.cardId)) tx.cardId = r.cardId;
+      applyMethod(tx, methodValue(r));
       state.transactions.push(tx);
       changed = true;
     }
@@ -612,8 +623,9 @@ function options(list, selected) {
   return all.map((c) => `<option value="${esc(c)}" ${c === selected ? 'selected' : ''}>${esc(c)}</option>`).join('');
 }
 function methodOptions(selected) {
-  const cs = cards();
-  return `<option value="">💵 Efectivo / débito</option>` + cs.map((c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>💳 ${esc(c.name)}</option>`).join('');
+  const sel = selected || 'cash';
+  return Object.entries(PAY_METHODS).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${v}</option>`).join('') +
+    cards().map((c) => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>💳 ${esc(c.name)} (crédito)</option>`).join('');
 }
 
 function txTitle(t) {
@@ -629,6 +641,7 @@ function txRow(t, withDate = false) {
   const title = t.note && t.note !== txTitle(t) ? t.note : txTitle(t);
   const parts = [title === txTitle(t) ? (t.type === 'gasto' || t.type === 'ingreso' ? t.category : TYPE_LABEL[t.type]) : txTitle(t)];
   if (t.cardId) parts.push('💳 ' + (findDebt(t.cardId)?.name || 'tarjeta'));
+  else if (t.type === 'gasto' && t.method && t.method !== 'cash') parts.push(PAY_METHODS[t.method] || '');
   if (t.auto) parts.push('automático');
   if (withDate) parts.push(dateLabel(t.date));
   const emoji = t.type === 'ahorro' ? (GOAL_EMOJI[findGoal(t.goalId)?.kind] || '🐷')
@@ -659,7 +672,7 @@ function occRow(o) {
   const sub = [];
   if (o.arrive) sub.push('Llega ' + shortDate(o.arrive));
   sub.push('Vence ' + shortDate(o.due));
-  sub.push(s.tx ? methodLabel(s.tx.cardId) : methodLabel(r.cardId));
+  sub.push(s.tx ? methodLabel(s.tx) : methodLabel(r));
   if (r.autopay) sub.push('automático');
   return `<button class="row" data-action="occ" data-id="${r.id}" data-period="${esc(o.period)}" data-month="${o.m}">
     <span class="avatar">${REC_EMOJI[r.kind] || '📌'}</span>
@@ -703,7 +716,7 @@ function renderInicio() {
     ${stat('Ingresos', tot.income, 'income')}
     ${stat('Gastos', tot.expense, 'expense', tot.onCard ? `${money(tot.onCard)} con tarjeta` : '')}
     ${stat('Ahorro e inversión', tot.saved, 'saving', rate !== null ? `${rate}% de tus ingresos` : '')}
-    ${stat('Efectivo disponible', tot.available, tot.available < 0 ? 'expense' : 'primary', 'Lo que te queda en mano')}
+    ${stat('Dinero disponible', tot.available, tot.available < 0 ? 'expense' : 'primary', 'En efectivo y en el banco')}
   </section>`;
 
   html += alertsHtml(m, tot);
@@ -915,7 +928,7 @@ function renderPagos() {
     html += `<section class="card list-card"><div class="card-head pad"><h2>${REC_EMOJI[kind]} ${label}</h2><span class="muted small num">${money(sum(list, monthlyEquivalent))}/mes</span></div>
       ${list.map((r) => `<button class="row" data-action="edit-rec" data-id="${r.id}">
         <span class="row-main"><span class="row-title">${esc(r.name)}${r.active === false ? ' <span class="badge">pausado</span>' : ''}</span>
-        <span class="row-sub">${esc(recSchedule(r))} · ${esc(methodLabel(r.cardId))}</span></span>
+        <span class="row-sub">${esc(recSchedule(r))} · ${esc(methodLabel(r))}</span></span>
         <span class="row-amt">${r.variable ? '~' : ''}${money(r.amount)}</span></button>`).join('')}
     </section>`;
   }
@@ -1438,7 +1451,7 @@ function txForm(tx, presetType = 'gasto', preset = {}) {
   const goals = state.goals;
   const loans = state.debts.filter((d) => d.kind !== 'tarjeta' && (debtInfo(d).owed > 0 || (tx && tx.debtId === d.id)));
   const goalId = tx?.goalId || preset.goalId || goals[0]?.id || '';
-  const method = tx ? (tx.cardId || '') : validCard(preset.cardId ?? state.settings.lastMethod);
+  const method = tx ? methodValue(tx) : (validCard(preset.cardId) || defaultMethod());
   const body = `
     <div class="seg" role="radiogroup" aria-label="Tipo">
       ${['ingreso', 'gasto', 'ahorro'].map((t) => `<label class="seg-item seg-${t}"><input type="radio" name="type" value="${t}" ${t === type ? 'checked' : ''}><span>${TYPE_LABEL[t]}</span></label>`).join('')}
@@ -1446,7 +1459,7 @@ function txForm(tx, presetType = 'gasto', preset = {}) {
     ${field('Monto', amountInput('amount', tx ? Math.abs(tx.amount) : (preset.amount || ''), 'data-autofocus required'))}
     ${field('Categoría', `<select name="category">${options(state.categories.ingreso, tx?.type === 'ingreso' ? tx.category : state.categories.ingreso[0])}</select>`, 'data-for="ingreso"')}
     ${field('Categoría', `<select name="category">${options(state.categories.gasto, tx?.type === 'gasto' ? tx.category : (preset.category || state.categories.gasto[0]))}</select>`, 'data-for="gasto"')}
-    ${field('¿Con qué pagaste?', `<select name="cardId">${methodOptions(method)}</select>`, 'data-for="gasto"')}
+    ${field('¿Con qué pagaste?', `<select name="method">${methodOptions(method)}</select>`, 'data-for="gasto"')}
     ${loans.length ? field('¿Es pago de un préstamo o deuda?', `<select name="debtId"><option value="">No</option>${loans.map((d) => `<option value="${d.id}" ${tx?.debtId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>`, 'data-for="gasto"') : ''}
     ${goals.length
       ? field('Meta', `<select name="goalId">${goals.map((g) => `<option value="${g.id}" ${g.id === goalId ? 'selected' : ''}>${esc(GOAL_EMOJI[g.kind] || '')} ${esc(g.name)}</option>`).join('')}</select>`, 'data-for="ahorro"') +
@@ -1469,13 +1482,13 @@ function txForm(tx, presetType = 'gasto', preset = {}) {
       t.date = data.date;
       t.note = (data.note || '').trim();
       t.amount = amount;
-      delete t.debtId; delete t.goalId; delete t.cardId;
+      delete t.debtId; delete t.goalId; delete t.cardId; delete t.method;
       if (t.type === 'ingreso') t.category = data.category;
       if (t.type === 'gasto') {
         t.category = data.category;
-        if (data.cardId && findDebt(data.cardId)) t.cardId = data.cardId;
+        applyMethod(t, data.method);
         if (data.debtId) { t.debtId = data.debtId; t.category = 'Deudas'; }
-        state.settings.lastMethod = data.cardId || 'cash';
+        state.settings.lastMethod = methodValue(t);
       }
       if (t.type === 'ahorro') {
         if (!data.goalId) return fail('Primero crea una meta en Más → Metas');
@@ -1620,7 +1633,7 @@ function recForm(r, kindPreset = 'factura') {
       </div>
       ${field('Mes en que se paga', `<select name="month">${months.map(([n, name]) => `<option value="${n}" ${n === Number(r?.month || new Date().getMonth() + 1) ? 'selected' : ''}>${name}</option>`).join('')}</select>`, 'data-dep="frequency" data-for="anual"')}
       ${field('Categoría', `<select name="category">${options(state.categories.gasto, cat)}</select>`)}
-      ${field('¿Con qué lo pagas?', `<select name="cardId">${methodOptions(r ? r.cardId : validCard(state.settings.lastMethod))}</select>`)}
+      ${field('¿Con qué lo pagas?', `<select name="method">${methodOptions(r ? methodValue(r) : defaultMethod())}</select>`)}
       ${checkbox('autopay', 'Se cobra solo (domiciliado): regístralo automáticamente el día de pago', r ? r.autopay : kind === 'suscripcion')}
       ${r ? checkbox('paused', 'Pausado (ya no lo pago por ahora)', r.active === false) : ''}
       <p class="hint">Si no sabes el día en que llega la factura, déjalo vacío.</p>`,
@@ -1640,12 +1653,14 @@ function recForm(r, kindPreset = 'factura') {
       const frequency = data.frequency;
       const dueDay = toDay(frequency === 'quincenal' ? data.dueDayQ1 : data.dueDay);
       if (!dueDay) return fail('Escribe el día límite para pagar');
+      const pm = {};
+      applyMethod(pm, data.method);
       const fields = {
         name, kind: data.kind, amount, variable: !!data.variable, frequency, dueDay,
         arriveDay: frequency === 'quincenal' ? null : toDay(data.arriveDay),
         dueDay2: frequency === 'quincenal' ? toDay(data.dueDay2) || 30 : null,
         month: frequency === 'anual' ? Number(data.month) : null,
-        category: data.category, cardId: validCard(data.cardId) || null,
+        category: data.category, cardId: pm.cardId || null, method: pm.method || null,
         autopay: !!data.autopay && !data.variable
       };
       if (data.autopay && data.variable) toast('Los pagos con monto variable no se registran solos');
@@ -1674,14 +1689,14 @@ function payRecForm(o) {
     body: `<p class="small">${o.arrive ? `Llega el <b>${longDate(o.arrive)}</b> · ` : ''}Vence el <b>${longDate(o.due)}</b> ${occBadge(s)}</p>
       ${field('Monto', amountInput('amount', r.variable ? (lastTx?.amount || r.amount || '') : r.amount, 'data-autofocus required'))}
       ${r.variable ? '<p class="hint" style="margin:-8px 0 14px">Escribe lo que dice la factura de este mes.</p>' : ''}
-      ${field('¿Con qué pagaste?', `<select name="cardId">${methodOptions(r.cardId || '')}</select>`)}
+      ${field('¿Con qué pagaste?', `<select name="method">${methodOptions(methodValue(r))}</select>`)}
       ${field('Fecha de pago', `<input type="date" name="date" required value="${todayISO()}">`)}
       ${field('Nota (opcional)', `<input name="note" maxlength="80" value="${esc(r.name)}">`)}`,
     onSubmit: (data) => {
       const amount = parseAmount(data.amount);
       if (!(amount > 0)) return fail('Escribe un monto mayor que cero');
       const tx = { id: uid(), createdAt: Date.now(), type: 'gasto', amount, category: r.category, date: data.date, note: (data.note || '').trim(), recurringId: r.id, period: o.period };
-      if (validCard(data.cardId)) tx.cardId = data.cardId;
+      applyMethod(tx, data.method);
       state.transactions.push(tx);
       r.skip = (r.skip || []).filter((p) => p !== o.period);
       return `${r.name}: pagado ✓`;
@@ -1952,7 +1967,7 @@ function exportCSV() {
   const rows = [['Fecha', 'Tipo', 'Categoría', 'Detalle', 'Método', 'Monto', 'Nota']];
   for (const t of sortTx(state.transactions).reverse()) {
     const sign = t.type === 'ingreso' || t.type === 'ahorro' ? 1 : -1;
-    rows.push([t.date, TYPE_LABEL[t.type], t.category, txTitle(t), t.type === 'gasto' ? methodLabel(t.cardId).replace(/^\S+ /, '') : '', sign * t.amount, t.note || '']);
+    rows.push([t.date, TYPE_LABEL[t.type], t.category, txTitle(t), t.type === 'gasto' ? methodLabel(t).replace(/^\S+ /, '') : '', sign * t.amount, t.note || '']);
   }
   const csv = '﻿' + rows.map((r) => r.map(q).join(',')).join('\r\n');
   downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `misfinanzas-movimientos-${todayISO()}.csv`);
