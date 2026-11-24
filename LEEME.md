@@ -14,6 +14,11 @@ Funciona **sin internet**, se instala en el celular como una app y se **sincroni
 | **Clientes** | Cuánto te paga cada cliente y cada cuánto, sus facturas, cuánto te deben y cuántas facturas están atrasadas. Crea las facturas del mes con un toque. |
 | **Más** | Metas de ahorro e inversión, presupuesto 50/30/20, avisos en el calendario del celular, ajustes, sincronización y respaldo. |
 
+### Registrar con la voz
+Toca el micrófono 🎤 (junto al botón +) y di, por ejemplo, “Gasté 10 dólares con mi tarjeta en una pizza”.
+La app entiende el monto, si fue con tarjeta, transferencia, débito o efectivo, la categoría, la nota y si fue hoy, ayer o antier.
+Te muestra el gasto ya lleno para que lo revises y toques **Guardar**. Si el micrófono de la app no funciona, toca el cuadro de texto y usa el micrófono del teclado.
+
 ### Avisos en el calendario del celular
 En **Más → Avisos en tu calendario** eliges qué pasar (pagos fijos, tarjeta, préstamos, cobros a clientes) y cuántos días antes avisarte.
 La app crea un archivo `.ics` que agregas a tu calendario; desde ahí el celular te avisa aunque no abras la app.

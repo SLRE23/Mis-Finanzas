@@ -1,6 +1,6 @@
 /* Service worker: guarda la app en el dispositivo para que funcione sin internet.
    Sube el número de CACHE cada vez que publiques cambios. */
-const CACHE = 'misfinanzas-v7';
+const CACHE = 'misfinanzas-v8';
 const ASSETS = [
   './',
   './index.html',

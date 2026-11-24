@@ -5,7 +5,7 @@
    activas la sincronización, también en tu cuenta de Firebase.
    ========================================================= */
 
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.4.0';
 const STORAGE_KEY = 'misfinanzas:data:v1';
 const PENDING_KEY = 'misfinanzas:pendientes';
 const SYNCUID_KEY = 'misfinanzas:sync-uid';
@@ -61,7 +61,7 @@ function defaultState() {
     version: 2,
     settings: {
       currency: guessCurrency(), theme: 'auto', expectedIncome: 0, lastBackup: null, lastMethod: 'cash',
-      calDays: 2, calInclude: { fixed: true, cards: true, loans: true, clients: true }, calHash: null, calExportedAt: null
+      calDays: 2, calInclude: { daily: true, fixed: true, cards: true, loans: true, clients: true }, calDailyTime: '21:00', calHash: null, calExportedAt: null
     },
     categories: {
       ingreso: ['Salario', 'Clientes', 'Negocio', 'Freelance', 'Inversiones', 'Regalos', 'Otros ingresos'],
@@ -659,6 +659,7 @@ function render() {
   $('#monthLabel').textContent = cap(monthName(ui.month));
   const fabLabel = { deudas: 'Agregar deuda o tarjeta', metas: 'Nueva meta', pagos: 'Agregar pago fijo', clientes: 'Agregar cliente', cliente: 'Nueva factura' }[ui.tab] || 'Agregar movimiento';
   $('#fab').hidden = ui.tab === 'ajustes' || ui.tab === 'mas' || ui.tab === 'calendario';
+  $('#micFab').hidden = !(ui.tab === 'inicio' || ui.tab === 'movimientos');
   $('#fab').setAttribute('aria-label', fabLabel);
   view.innerHTML = VIEWS[ui.tab]();
   refreshSyncUi();
@@ -911,6 +912,7 @@ function quickCard() {
   }).join('');
   return `<section class="card">
     <div class="card-head"><h2>Registro rápido</h2><span class="small muted">Toca y escribe el monto</span></div>
+    <button class="btn primary block voice-cta" data-action="voice">${ICON_MIC} Dime tu gasto</button>
     <div class="quick-grid">${btns}</div>
   </section>`;
 }
@@ -944,6 +946,10 @@ function alertsHtml(m, tot) {
     const p = (exp[cat] || 0) / limit;
     if (p >= 1) out.push(alertBox('bad', '🚨', `Pasaste tu límite en <b>${esc(cat)}</b>: ${money(exp[cat])} de ${money(limit)}.`));
     else if (p >= 0.8) out.push(alertBox('', '🔔', `Llevas el ${Math.round(p * 100)}% de tu límite en <b>${esc(cat)}</b>.`));
+  }
+  // En la noche, si hoy no registraste gastos, te lo recuerda (lo primero de los avisos)
+  if (isCurrent && new Date().getHours() >= 18 && !state.transactions.some((x) => x.type === 'gasto' && x.date === todayISO() && !x.auto)) {
+    out.unshift(alertBox('info', '📝', '¿Gastaste algo hoy? <b>Toca aquí y dímelo</b> antes de que se te olvide.', 'data-action="voice"'));
   }
   if (isCurrent && state.settings.calHash && state.settings.calHash !== calendarHash()) {
     out.push(alertBox('info', '📅', 'Cambiaste tus pagos. <b>Actualiza los avisos de tu calendario</b> para que coincidan.', 'data-action="goto" data-id="calendario"'));
@@ -1567,6 +1573,7 @@ sheetForm.addEventListener('submit', (e) => {
 sheetForm.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-sheet]');
   if (!b) {
+    if (e.target.closest('[data-voice]')) { if (recog) recog.stop(); else startListening(); return; }
     const quick = e.target.closest('[data-fill]');
     if (quick) { const inp = sheetForm.elements[quick.dataset.target || 'amount']; if (inp) inp.value = quick.dataset.fill; }
     return;
@@ -1648,10 +1655,11 @@ function txForm(tx, presetType = 'gasto', preset = {}) {
     <div class="seg" role="radiogroup" aria-label="Tipo">
       ${['ingreso', 'gasto', 'ahorro'].map((t) => `<label class="seg-item seg-${t}"><input type="radio" name="type" value="${t}" ${t === type ? 'checked' : ''}><span>${TYPE_LABEL[t]}</span></label>`).join('')}
     </div>
-    ${field('Monto', amountInput('amount', tx ? Math.abs(tx.amount) : (preset.amount || ''), 'data-autofocus required'))}
+    ${preset.heard ? `<div class="heard">🎤 “${esc(preset.heard)}”${preset.missingAmount ? '<br><b>No entendí el monto: escríbelo aquí abajo.</b>' : '<br><span class="muted small">Revisa que esté bien y toca Guardar.</span>'}</div>` : ''}
+    ${field('Monto', amountInput('amount', tx ? Math.abs(tx.amount) : (preset.amount || ''), (preset.heard && !preset.missingAmount ? '' : 'data-autofocus ') + 'required'))}
     ${!tx && preset.lastAmount > 0 ? quickFill([['La última vez', preset.lastAmount]]) : ''}
-    ${field('Categoría', `<select name="category">${options(state.categories.ingreso, tx?.type === 'ingreso' ? tx.category : state.categories.ingreso[0])}</select>`, 'data-for="ingreso"')}
-    ${field('Categoría', `<select name="category">${options(state.categories.gasto, tx?.type === 'gasto' ? tx.category : (preset.category || state.categories.gasto[0]))}</select>`, 'data-for="gasto"')}
+    ${field('Categoría', `<select name="category">${options(state.categories.ingreso, tx?.type === 'ingreso' ? tx.category : ((type === 'ingreso' && preset.category) || state.categories.ingreso[0]))}</select>`, 'data-for="ingreso"')}
+    ${field('Categoría', `<select name="category">${options(state.categories.gasto, tx?.type === 'gasto' ? tx.category : ((type === 'gasto' && preset.category) || state.categories.gasto[0]))}</select>`, 'data-for="gasto"')}
     ${field('¿Con qué pagaste?', `<select name="method">${methodOptions(method)}</select>`, 'data-for="gasto"')}
     ${loans.length ? field('¿Es pago de un préstamo o deuda?', `<select name="debtId"><option value="">No</option>${loans.map((d) => `<option value="${d.id}" ${tx?.debtId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>`, 'data-for="gasto"') : ''}
     ${goals.length
@@ -2158,7 +2166,7 @@ function importBackup(file) {
 /* =========================================================
    Recordatorios en el calendario del celular (archivo .ics)
    ========================================================= */
-const CAL_KINDS = { fixed: '🧾 Pagos fijos (facturas, suscripciones, pensión)', cards: '💳 Fecha límite de la tarjeta', loans: '🏦 Cuotas de préstamos', clients: '💼 Cobros a clientes' };
+const CAL_KINDS = { daily: '📝 Recordatorio cada noche: ¿registraste tus gastos?', fixed: '🧾 Pagos fijos (facturas, suscripciones, pensión)', cards: '💳 Fecha límite de la tarjeta', loans: '🏦 Cuotas de préstamos', clients: '💼 Cobros a clientes' };
 
 /** Regla mensual para "el día N" (si el mes es más corto, usa su último día). */
 function monthlyRule(day) {
@@ -2230,12 +2238,20 @@ function calendarEvents(inc = state.settings.calInclude || {}) {
       add({ uid: `inv-${inv.id}`, summary: `💼 Vence factura${inv.number ? ' #' + inv.number : ''} de ${c.name}${amt(inv.amount)}`, desc: 'Fecha límite de pago de tu cliente.', start: inv.dueDate, rule: null, single: true });
     }
   }
+
+  // Recordatorio de cada noche para registrar los gastos del día (avisa a la hora exacta)
+  if (calOn('daily', inc)) {
+    add({ uid: 'daily-gastos', summary: '📝 ¿Registraste tus gastos de hoy?', desc: 'Abre Mis Finanzas desde tu pantalla de inicio y toca el micrófono 🎤 para dictar lo que gastaste.', start: t, time: state.settings.calDailyTime || '21:00', rule: 'FREQ=DAILY' });
+  }
   return out.sort((a, b) => a.start.localeCompare(b.start));
 }
+/** El recordatorio diario viene activado aunque tus ajustes sean de antes de que existiera. */
+function calOn(k, inc = state.settings.calInclude || {}) { return k === 'daily' ? inc.daily !== false : !!inc[k]; }
+const timeLabel = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString(LOCALE, { hour: 'numeric', minute: '2-digit' }); };
 
 /** Huella de lo que hay en el calendario (sin fechas que cambian cada mes ni facturas sueltas). */
 function calendarHash(events = calendarEvents()) {
-  const str = JSON.stringify([state.settings.calDays, events.filter((e) => !e.single).map((e) => [e.uid, e.summary, e.rule.replace(/;COUNT=\d+/, ''), e.alarm])]);
+  const str = JSON.stringify([state.settings.calDays, events.filter((e) => !e.single).map((e) => [e.uid, e.summary, e.rule.replace(/;COUNT=\d+/, ''), e.alarm, e.time || ''])]);
   let h = 5381;
   for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
   return h.toString(36);
@@ -2260,11 +2276,20 @@ function icsText(events) {
   const link = location.origin + location.pathname;
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Mis Finanzas//ES', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Mis Finanzas'];
   for (const e of events) {
-    lines.push('BEGIN:VEVENT', `UID:${e.uid}@misfinanzas`, `DTSTAMP:${stamp}`,
-      `DTSTART;VALUE=DATE:${ymd(e.start)}`, `DTEND;VALUE=DATE:${ymd(addDays(e.start, 1))}`,
-      `SUMMARY:${esc2(e.summary)}`, `DESCRIPTION:${esc2(e.desc + '\n\nAbrir Mis Finanzas: ' + link)}`, 'TRANSP:TRANSPARENT');
+    lines.push('BEGIN:VEVENT', `UID:${e.uid}@misfinanzas`, `DTSTAMP:${stamp}`);
+    if (e.time) {
+      // Evento con hora (hora local del celular) de 10 minutos
+      const [h, m] = e.time.split(':').map(Number), end = h * 60 + m + 10;
+      const hm = (x) => String(Math.floor(x / 60) % 24).padStart(2, '0') + String(x % 60).padStart(2, '0') + '00';
+      lines.push(`DTSTART:${ymd(e.start)}T${hm(h * 60 + m)}`, `DTEND:${ymd(e.start)}T${hm(Math.min(end, 23 * 60 + 59))}`);
+    } else {
+      lines.push(`DTSTART;VALUE=DATE:${ymd(e.start)}`, `DTEND;VALUE=DATE:${ymd(addDays(e.start, 1))}`);
+    }
+    lines.push(`SUMMARY:${esc2(e.summary)}`, `DESCRIPTION:${esc2(e.desc + '\n\nAbrir Mis Finanzas: ' + link)}`, 'TRANSP:TRANSPARENT');
     if (e.rule) lines.push('RRULE:' + e.rule);
-    if (e.alarm) {
+    if (e.time) {
+      lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc2(e.summary)}`, 'TRIGGER:PT0M', 'END:VALARM');
+    } else if (e.alarm) {
       // Aviso a las 9:00 de la mañana: unos días antes y el mismo día
       if (days > 0) lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc2(e.summary)}`, `TRIGGER:-P${days - 1 ? days - 1 + 'D' : ''}T15H`, 'END:VALARM');
       lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc2(e.summary)}`, 'TRIGGER:PT9H', 'END:VALARM');
@@ -2300,19 +2325,22 @@ function renderCalendario() {
   const outdated = s.calHash && s.calHash !== calendarHash(events);
   const canShare = typeof navigator.share === 'function';
   const when = s.calExportedAt ? new Date(s.calExportedAt).toLocaleDateString(LOCALE, { dateStyle: 'medium' }) : null;
-  const dayTxt = (e) => e.rule ? (e.rule.startsWith('FREQ=YEARLY') ? 'Cada año, ' + shortDate(e.start) : `Cada mes, día ${e.rule.includes('BYSETPOS') ? Number(e.start.slice(8)) + ' (o el último)' : Number(e.start.slice(8))}`) : shortDate(e.start);
+  const dayTxt = (e) => e.time ? 'Todos los días, ' + timeLabel(e.time) : e.rule ? (e.rule.startsWith('FREQ=YEARLY') ? 'Cada año, ' + shortDate(e.start) : `Cada mes, día ${e.rule.includes('BYSETPOS') ? Number(e.start.slice(8)) + ' (o el último)' : Number(e.start.slice(8))}`) : shortDate(e.start);
 
   return `${outdated ? alertBox('', '🔄', 'Cambiaste tus pagos desde la última vez. <b>Vuelve a pasar el archivo</b> a tu calendario (mira abajo cómo actualizarlo).') : ''}
     <section class="card">
       <h2>📅 Avisos en tu calendario</h2>
       <p class="small muted">Tu calendario del celular te avisará de tus pagos aunque no abras la app y aunque no tengas internet.</p>
       <h3 class="small muted" style="margin:12px 0 6px">¿Qué quieres pasar?</h3>
-      ${Object.entries(CAL_KINDS).map(([k, label]) => `<label class="check"><input type="checkbox" data-cal="${k}" ${inc[k] ? 'checked' : ''}><span>${label}</span></label>`).join('')}
-      <label class="setting"><span>Avisarme</span><select data-calsetting="calDays">
+      ${Object.entries(CAL_KINDS).map(([k, label]) => `<label class="check"><input type="checkbox" data-cal="${k}" ${calOn(k, inc) ? 'checked' : ''}><span>${label}</span></label>`).join('')}
+      ${calOn('daily', inc) ? `<label class="setting"><span>Recordatorio de la noche</span><select data-calsetting="calDailyTime">
+        ${['19:00', '19:30', '20:00', '20:30', '21:00', '21:30', '22:00', '22:30', '23:00'].map((v) => `<option value="${v}" ${(s.calDailyTime || '21:00') === v ? 'selected' : ''}>${timeLabel(v)}</option>`).join('')}
+      </select></label>` : ''}
+      <label class="setting"><span>Avisos de pagos</span><select data-calsetting="calDays">
         ${[[0, 'Solo el mismo día'], [1, '1 día antes'], [2, '2 días antes'], [3, '3 días antes'], [5, '5 días antes']]
           .map(([v, l]) => `<option value="${v}" ${Number(s.calDays) === v ? 'selected' : ''}>${l}</option>`).join('')}
       </select></label>
-      <p class="hint">Los avisos llegan a las 9:00 de la mañana${Number(s.calDays) > 0 ? ', y también el mismo día' : ''}. Los cobros automáticos y el corte de la tarjeta aparecen en el calendario, pero sin aviso.</p>
+      <p class="hint">Los avisos de pagos llegan a las 9:00 de la mañana${Number(s.calDays) > 0 ? ', y también el mismo día' : ''}. Los cobros automáticos y el corte de la tarjeta aparecen en el calendario, pero sin aviso.</p>
       <div class="btn-row" style="margin-top:14px">
         ${canShare ? '<button class="btn primary" data-action="cal-share">📤 Pasar al calendario</button>' : ''}
         <button class="btn ${canShare ? '' : 'primary'}" data-action="cal-download">⬇️ Descargar archivo</button>
@@ -2402,6 +2430,231 @@ async function doAuth(kind) {
 /* =========================================================
    Acciones (clics)
    ========================================================= */
+/* =========================================================
+   Registro por voz: "Gasté 10 dólares con mi tarjeta en una pizza"
+   Todo se interpreta en el celular (sin enviar tus palabras a ningún servidor propio).
+   ========================================================= */
+const NUM_WORDS = {
+  cero: 0, un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
+  once: 11, doce: 12, trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17, dieciocho: 18, diecinueve: 19,
+  veinte: 20, veintiun: 21, veintiuno: 21, veintiuna: 21, veintidos: 22, veintitres: 23, veinticuatro: 24, veinticinco: 25,
+  veintiseis: 26, veintisiete: 27, veintiocho: 28, veintinueve: 29, treinta: 30, cuarenta: 40, cincuenta: 50, sesenta: 60,
+  setenta: 70, ochenta: 80, noventa: 90, cien: 100, ciento: 100, doscientos: 200, doscientas: 200, trescientos: 300,
+  trescientas: 300, cuatrocientos: 400, cuatrocientas: 400, quinientos: 500, quinientas: 500, seiscientos: 600,
+  seiscientas: 600, setecientos: 700, setecientas: 700, ochocientos: 800, ochocientas: 800, novecientos: 900, novecientas: 900
+};
+const CURRENCY_WORDS = new Set(['$', 'dolar', 'dolares', 'peso', 'pesos', 'euro', 'euros', 'colon', 'colones', 'soles', 'quetzal', 'quetzales',
+  'lempira', 'lempiras', 'cordobas', 'bolivar', 'bolivares', 'reales', 'usd', 'balboas', 'lucas', 'varos', 'pavos', 'centavos']);
+const VOICE_STOP = new Set(('gaste gastado gasto gastamos pague pagado pago pagamos compre compramos compra comprado puse meti costo costaron ' +
+  'salio fue fueron hice registra registrar anota anotar agrega agregar apunta mi mis tu la las el los lo un una unos unas me te se y o en de del ' +
+  'para por con al a que hoy ayer anteayer antier antes esta este noche manana tarde ahorita hace rato total como casi mas menos tarjeta tarjetas ' +
+  'credito debito efectivo transferencia transferi transfiri cash billete billetes contado dinero plata cobre recibi gane vendi pagaron depositaron ' +
+  'transfirieron ingreso entraron entro').split(' '));
+const VOICE_ARTICLES = new Set(['un', 'una', 'unos', 'unas', 'el', 'la', 'los', 'las', 'mi', 'mis', 'lo']);
+const CAT_KEYWORDS = {
+  'Comida': 'pizza pizzas comida almuerzo almorce cena cene desayuno desayune restaurante restaurant super supermercado mercado cafe hamburguesa hamburguesas tacos pollo pan panaderia sushi helado snack antojo refresco soda abarrotes verduras frutas carne pescado domicilio rappi ubereats pedidosya delivery comestibles',
+  'Transporte': 'gasolina combustible diesel uber taxi didi bus autobus metro pasaje pasajes peaje parqueo estacionamiento parking tren lavado llanta llantas mecanico taller aceite',
+  'Servicios': 'luz electricidad agua internet telefono celular recarga cable gas',
+  'Salud': 'farmacia medicina medicinas medicamento medicamentos doctor medico consulta dentista hospital clinica examen laboratorio pastillas',
+  'Entretenimiento': 'cine pelicula juego juegos fiesta bar cerveza cervezas tragos discoteca concierto entradas boletos paseo',
+  'Ropa': 'ropa zapatos tenis camisa camiseta pantalon pantalones vestido chaqueta',
+  'Educación': 'libro libros curso escuela colegio universidad matricula utiles cuaderno',
+  'Vivienda': 'alquiler renta arriendo hipoteca apartamento mantenimiento muebles',
+  'Suscripciones': 'netflix spotify disney hbo youtube suscripcion icloud',
+  'Pensión alimenticia': 'pension manutencion'
+};
+
+/** Convierte lo que dijiste en un movimiento: tipo, monto, método, categoría, nota y fecha. */
+function parseSpoken(text) {
+  const raw = String(text || '').replace(/(\d)\s*\$/g, '$1 $').replace(/\$\s*(\d)/g, '$ $1');
+  let items = raw.split(/\s+/).map((w) => w.replace(/^[¿¡"'“”«(]+|[.,;:!?"'“”»)]+$/g, '')).filter(Boolean)
+    .map((o) => ({ o, f: normText(o), used: false }));
+
+  // 1) Números dichos con palabras → dígitos ("treinta y cinco", "dos mil")
+  const isNumWord = (x) => x in NUM_WORDS || x === 'mil';
+  const merged = [];
+  for (let i = 0; i < items.length; i++) {
+    const w = items[i].f;
+    if (!isNumWord(w)) { merged.push(items[i]); continue; }
+    if (w === 'un' || w === 'una' || w === 'uno') {
+      const nx = items[i + 1]?.f;
+      if (!(nx && (isNumWord(nx) || CURRENCY_WORDS.has(nx)))) { merged.push(items[i]); continue; }
+    }
+    let total = 0, cur = 0, j = i;
+    while (j < items.length) {
+      const x = items[j].f;
+      if (x === 'mil') { total += (cur || 1) * 1000; cur = 0; j++; }
+      else if (x in NUM_WORDS) { cur += NUM_WORDS[x]; j++; }
+      else if (x === 'y' && items[j + 1] && items[j + 1].f in NUM_WORDS) j++;
+      else break;
+    }
+    const v = total + cur;
+    merged.push({ o: String(v), f: String(v), used: false, num: v });
+    i = j - 1;
+  }
+  items = merged;
+  for (const it of items) if (it.num === undefined && /^\d[\d.,]*$/.test(it.f)) it.num = parseAmount(it.f);
+
+  // 2) Centavos: "diez con cincuenta" / "10 con 50"
+  for (let i = 0; i + 2 < items.length; i++) {
+    const a = items[i], b = items[i + 2];
+    if (a.num !== undefined && Number.isInteger(a.num) && items[i + 1].f === 'con' && b.num !== undefined && Number.isInteger(b.num) && b.num < 100) {
+      a.num = round2(a.num + (b.o.length === 1 ? b.num / 10 : b.num / 100));
+      items[i + 1].used = true; b.used = true; b.num = undefined;
+    }
+  }
+
+  // 3) Monto: el número junto a "dólares"/"$", o el primero que digas
+  const nums = items.map((it, i) => ({ it, i })).filter((x) => Number.isFinite(x.it.num) && x.it.num > 0);
+  const pick = nums.find((x) => CURRENCY_WORDS.has(items[x.i + 1]?.f) || CURRENCY_WORDS.has(items[x.i - 1]?.f)) || nums[0];
+  const amount = pick ? pick.it.num : null;
+  for (const x of nums) x.it.used = true;
+  for (const it of items) if (CURRENCY_WORDS.has(it.f)) it.used = true;
+
+  const full = ' ' + items.map((x) => x.f).join(' ') + ' ';
+  const has = (re) => re.test(full);
+
+  // 4) ¿Gasto o ingreso?
+  const income = !has(/ (gaste|pague|compre|gastamos|pagamos|compramos) /) &&
+    has(/ (me pagaron|me pago|me depositaron|me transfirieron|me enviaron|me mandaron|cobre|cobramos|recibi|gane|vendi|ingreso|me entro|me entraron|sueldo|salario|quincena) /);
+  const type = income ? 'ingreso' : 'gasto';
+
+  // 5) Método de pago
+  let method = defaultMethod();
+  if (!income) {
+    const generic = new Set(['tarjeta', 'credito', 'debito', 'card', 'banco', 'de', 'mi', 'la']);
+    const byName = cards().find((c) => normText(c.name).split(/[^a-z0-9]+/).some((w) => w.length >= 3 && !generic.has(w) && items.some((it) => it.f === w && (it.used = true))));
+    if (byName) method = byName.id;
+    else if (has(/ debito /)) method = 'debit';
+    else if (has(/ (tarjeta|credito|visa|mastercard|master|amex) /)) method = cards().length ? (validCard(defaultMethod()) || cards()[0].id) : 'debit';
+    else if (has(/ (transferencia|transferi|transfiri|transferido|sinpe|zelle|yappy|nequi|daviplata|deposito|deposite) /)) method = 'transfer';
+    else if (has(/ (efectivo|cash|billete|billetes|contado) /)) method = 'cash';
+  }
+
+  // 6) Fecha
+  const date = has(/ (anteayer|antier|antes de ayer) /) ? addDays(todayISO(), -2) : has(/ ayer /) ? addDays(todayISO(), -1) : todayISO();
+
+  // 7) Nota: lo que va después de "en / de / para…" ("en una pizza" → Pizza); si no, las palabras que sobran
+  const content = (it) => it && !it.used && it.num === undefined && !VOICE_STOP.has(it.f) && !CURRENCY_WORDS.has(it.f) && it.f.length > 1;
+  let words = [];
+  for (let i = 0; i < items.length && !words.length; i++) {
+    if (!['en', 'de', 'del', 'para', 'por', 'al'].includes(items[i].f)) continue;
+    let j = i + 1;
+    while (items[j] && VOICE_ARTICLES.has(items[j].f)) j++;
+    while (content(items[j]) && words.length < 4) words.push(items[j++].o);
+  }
+  if (!words.length) words = items.filter(content).slice(0, 4).map((x) => x.o);
+  let note = words.length ? cap(words.join(' ')) : '';
+
+  // 8) Categoría
+  let category;
+  const exists = (list, name) => list.find((c) => normText(c) === normText(name));
+  if (income) {
+    const L = state.categories.ingreso;
+    const client = state.clients.find((c) => c.name && full.includes(' ' + normText(c.name) + ' '));
+    if (client) { note = client.name; category = exists(L, 'Clientes'); }
+    category = category || L.find((c) => full.includes(' ' + normText(c) + ' '))
+      || (has(/ cliente/) && exists(L, 'Clientes')) || (has(/ (sueldo|salario|quincena|nomina) /) && exists(L, 'Salario'))
+      || (has(/ (venta|vendi) /) && exists(L, 'Negocio')) || L[0];
+  } else {
+    const L = state.categories.gasto.filter((c) => !FIXED_CATS.gasto.includes(c));
+    const prev = note && sortTx(state.transactions).find((t) => t.type === 'gasto' && !t.recurringId && normText(t.note) === normText(note) && L.includes(t.category));
+    category = prev?.category || L.find((c) => full.includes(' ' + normText(c) + ' '));
+    if (!category) {
+      for (const [cat, list] of Object.entries(CAT_KEYWORDS)) {
+        const kw = new Set(list.split(' '));
+        const own = exists(L, cat);
+        if (own && items.some((it) => kw.has(it.f))) { category = own; break; }
+      }
+    }
+    category = category || exists(L, 'Otros gastos') || L[0];
+  }
+  return { type, amount, method, category, note, date, text: String(text || '').trim() };
+}
+
+/* --- Pantalla de voz --- */
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+const ICON_MIC = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v4M8 22h8"/></svg>';
+let recog = null;
+
+function setMic(on, msg) {
+  const b = sheetForm.querySelector('.mic-btn');
+  if (b) { b.classList.toggle('on', on); b.setAttribute('aria-label', on ? 'Dejar de escuchar' : 'Hablar'); }
+  const s = $('#voiceStatus');
+  if (s && msg) s.textContent = msg;
+}
+function stopListening() { const r = recog; recog = null; if (r) { try { r.abort(); } catch (_) { } } setMic(false); }
+
+function voiceForm() {
+  openSheet({
+    title: '🎤 Dime tu gasto',
+    submitLabel: 'Continuar',
+    body: `<div class="voice">
+        ${SpeechRec ? `<button type="button" class="mic-btn" data-voice aria-label="Hablar">${ICON_MIC}</button>` : ''}
+        <p class="voice-status" id="voiceStatus">${SpeechRec ? 'Toca el micrófono y habla' : 'Toca el cuadro de abajo y usa el micrófono 🎤 de tu teclado'}</p>
+      </div>
+      ${field('Lo que dijiste', `<textarea name="text" rows="2" maxlength="200" placeholder="Ej.: Gasté 10 dólares con mi tarjeta en una pizza" ${SpeechRec ? '' : 'data-autofocus'}></textarea>`)}
+      <p class="hint">También entiendo: “Ayer pagué 25 de gasolina en efectivo”, “Transferí 300 del alquiler”, “Me pagaron 500 de un cliente”.</p>`,
+    onSubmit: (data) => {
+      const text = (data.text || '').trim();
+      if (!text) return fail('Dime o escribe qué gastaste');
+      stopListening();
+      openFromVoice(text);
+      return false; // el formulario sigue abierto con el gasto ya lleno
+    }
+  });
+  if (SpeechRec) startListening();
+}
+
+function startListening() {
+  stopListening();
+  let r;
+  try { r = new SpeechRec(); } catch (_) { return setMic(false, 'Aquí no puedo usar el micrófono. Toca el cuadro y usa el 🎤 del teclado.'); }
+  recog = r;
+  r.lang = /^es/i.test(LOCALE) ? LOCALE : 'es-ES';
+  r.interimResults = true;
+  r.continuous = false;
+  r.maxAlternatives = 1;
+  r.onresult = (e) => {
+    let txt = '';
+    for (const res of e.results) txt += res[0].transcript;
+    const ta = sheetForm.elements.text;
+    if (ta) ta.value = txt.trim();
+  };
+  r.onerror = (e) => {
+    if (recog !== r) return;
+    recog = null;
+    const msgs = {
+      'not-allowed': 'No tengo permiso para el micrófono. En el iPhone: Ajustes → Safari → Micrófono → Permitir. O toca el cuadro y usa el 🎤 del teclado.',
+      'service-not-allowed': 'Para dictar aquí, activa Siri y Dictado en Ajustes. O toca el cuadro y usa el 🎤 del teclado.',
+      'no-speech': 'No te escuché. Toca el micrófono e intenta otra vez.',
+      'audio-capture': 'No encuentro el micrófono. Toca el cuadro y usa el 🎤 del teclado.',
+      'network': 'Para dictar aquí necesitas internet. Toca el cuadro y usa el 🎤 del teclado (funciona sin internet).'
+    };
+    setMic(false, msgs[e.error] || 'No pude escucharte. Toca el micrófono e intenta otra vez.');
+  };
+  r.onend = () => {
+    if (recog !== r) return;
+    recog = null;
+    const text = (sheetForm.elements.text?.value || '').trim();
+    if (text && sheet.open && sheetForm.querySelector('.mic-btn')) {
+      setMic(false, 'Entendido ✓');
+      setTimeout(() => { if (sheet.open && sheetForm.querySelector('.mic-btn')) openFromVoice(text); }, 350);
+    } else setMic(false, 'Toca el micrófono para hablar');
+  };
+  try { r.start(); setMic(true, 'Te escucho… dime tu gasto'); }
+  catch (_) { recog = null; setMic(false, 'Toca el micrófono para hablar'); }
+}
+
+function openFromVoice(text) {
+  const p = parseSpoken(text);
+  txForm(null, p.type, {
+    amount: p.amount || '', category: p.category, method: p.method, note: p.note, date: p.date,
+    title: p.type === 'ingreso' ? '🎤 Revisa tu ingreso' : '🎤 Revisa tu gasto', heard: p.text, missingAmount: !p.amount
+  });
+}
+sheet.addEventListener('close', stopListening);
+
 function occFrom(el) {
   const r = findRec(el.dataset.id);
   if (!r) return null;
@@ -2411,6 +2664,7 @@ function occFrom(el) {
 const ACTIONS = {
   'goto': (id) => go(id),
   'new-tx': (id) => txForm(null, id || 'gasto'),
+  'voice': () => voiceForm(),
   'quick-tx': (_, el) => {
     const d = el.dataset;
     txForm(null, 'gasto', { category: d.cat, method: d.method, note: d.note, lastAmount: Number(d.last) || 0, title: emojiFor(d.cat) + ' ' + (d.note || d.cat) });
@@ -2520,7 +2774,8 @@ view.addEventListener('input', (e) => {
 view.addEventListener('change', (e) => {
   const cal = e.target.dataset.cal;
   if (cal) { state.settings.calInclude = { ...(state.settings.calInclude || {}), [cal]: e.target.checked }; return afterChange(); }
-  if (e.target.dataset.calsetting) { state.settings.calDays = Number(e.target.value) || 0; return afterChange('Ajuste guardado'); }
+  const calKey = e.target.dataset.calsetting;
+  if (calKey) { state.settings[calKey] = calKey === 'calDays' ? Number(e.target.value) || 0 : e.target.value; return afterChange('Ajuste guardado'); }
   const key = e.target.dataset.setting;
   if (!key) return;
   state.settings[key] = e.target.value;
@@ -2541,6 +2796,7 @@ $('#backBtn').addEventListener('click', () => go(BACK_TO[ui.tab] || 'inicio'));
 $('#prevMonth').addEventListener('click', () => { ui.month = shiftMonth(ui.month, -1); render(); });
 $('#nextMonth').addEventListener('click', () => { ui.month = shiftMonth(ui.month, 1); render(); });
 $('#monthLabel').addEventListener('click', () => { ui.month = monthOf(todayISO()); render(); });
+$('#micFab').addEventListener('click', () => voiceForm());
 $('#fab').addEventListener('click', () => {
   if (ui.tab === 'deudas') debtForm(null, cards().length ? 'prestamo' : 'tarjeta');
   else if (ui.tab === 'metas') goalForm(null);
